@@ -1,3 +1,1 @@
 $env:PATH = "C:\OpenBLAS\bin;" + $env:PATH ; g++ cpu_eigen.cpp test_cpu_eigen.cpp -o test_cpu_eigen.exe -std=c++11 -O3 -I"C:\OpenBLAS\include" -L"C:\OpenBLAS\lib" -lopenblas ; .\test_cpu_eigen.exe
-
-nvcc naive_gpu_eigen.cu test_naive_gpu_eigen.cu -o test_naive_gpu_eigen.exe -std=c++11 -O3 -lcusolver -lcublas ; .\test_naive_gpu_eigen.exe

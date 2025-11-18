@@ -69,7 +69,7 @@ int main() {
     const double sparsity = 0.01;
     double* times_ms = (double*)malloc(num_runs * sizeof(double));
 
-    printf("Running %d iterations of 100x100 sparse Hamiltonian eigensolve on GPU...\n\n", num_runs);
+    printf("Running %d iterations of %dx%d sparse Hamiltonian eigensolve on GPU...\n\n", num_runs, n, n);
 
     for (int run = 0; run < num_runs; run++) {
         // Create a new random matrix for each run
