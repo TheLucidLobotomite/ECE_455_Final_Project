@@ -65,7 +65,7 @@ int main() {
     printf("\n=== LAPACK EIGENVALUE SOLVER BENCHMARK ===\n\n");
 
     const int n = 1000;
-    const int num_runs = 1000;
+    const int num_runs = 100;
     const double sparsity = 0.01;
     double* times_ms = (double*)malloc(num_runs * sizeof(double));
 
