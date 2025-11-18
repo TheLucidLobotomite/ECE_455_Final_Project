@@ -15,5 +15,3 @@ nvcc naive_gpu_eigen.cu test_naive_gpu_eigen.cu -o gpu_eigen \
 
 echo "Running gpu_eigen..."
 ./gpu_eigen
-
-echo "All tasks completed."

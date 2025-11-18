@@ -112,7 +112,6 @@ int main() {
     printf("Average time:  %.6f ms\n", avg_time);
     printf("Min time:      %.6f ms\n", min_time);
     printf("Max time:      %.6f ms\n", max_time);
-    printf("Total time:    %.6f ms (%.6f seconds)\n", total_time, total_time/1000.0);
     printf("\n");
 
     /*
