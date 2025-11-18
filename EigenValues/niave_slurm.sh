@@ -9,16 +9,11 @@
 cd $SLURM_SUBMIT_DIR
 module load nvidia/cuda
 
-echo "Compiling naive_gpu_eigen.cu..."
-nvcc naive_gpu_eigen.cu -o naive_gpu_eigen
+echo "Compiling both CUDA sources into one binary..."
+nvcc naive_gpu_eigen.cu test_naive_gpu_eigen.cu -o gpu_eigen \
+    -lcusolver -lcublas
 
-echo "Running naive_gpu_eigen..."
-./naive_gpu_eigen
-
-echo "Compiling test_naive_gpu_eigen.cu..."
-nvcc test_naive_gpu_eigen.cu -o test_naive_gpu_eigen
-
-echo "Running test_naive_gpu_eigen..."
-./test_naive_gpu_eigen
+echo "Running gpu_eigen..."
+./gpu_eigen
 
 echo "All tasks completed."
