@@ -64,8 +64,8 @@ void free_matrix(double** mat, int n) {
 int main() {
     printf("\n=== GPU EIGENVALUE SOLVER BENCHMARK ===\n\n");
 
-    const int n = 100;
-    const int num_runs = 10000;
+    const int n = 1000;
+    const int num_runs = 1000;
     const double sparsity = 0.01;
     double* times_ms = (double*)malloc(num_runs * sizeof(double));
 
