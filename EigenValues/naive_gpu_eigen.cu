@@ -84,8 +84,6 @@ EigenResult* compute_eigenvalues_gpu(double** matrix, int n) {
         exit(EXIT_FAILURE);
     }
     
-    printf("Matrix is symmetric, using cusolverDnDsyevd (GPU divide-and-conquer)\n");
-    
     // Convert matrix from row-major to column-major format
     double* A_host = (double*)malloc(n * n * sizeof(double));
     for (int i = 0; i < n; i++) {
