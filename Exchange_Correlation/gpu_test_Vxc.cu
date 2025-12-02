@@ -11,8 +11,6 @@
 #include <iomanip>
 #include "gpu_Vxc.cu"
 
-const double TOLERANCE_GPU = 1e-9;
-
 bool test_correctness() {
     std::cout << "\n=== Correctness Tests ===\n\n";
     

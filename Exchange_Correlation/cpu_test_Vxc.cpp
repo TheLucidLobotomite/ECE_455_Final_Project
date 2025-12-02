@@ -24,8 +24,8 @@ bool test_correctness() {
     std::cout << "Test 1: Known density values\n";
     std::vector<double> n_test = {0.001, 0.01, 0.1, 1.0, 10.0};
     
-    std::cout << "n (e/bohr³)     Vx (Ha)         Vc (Ha)         Vxc (Ha)        Vxc (eV)\n";
-    std::cout << "-------------------------------------------------------------------------------\n";
+    std::cout << "n (e/bohr³)     Vxc (Ha)        Vxc (eV)\n";
+    std::cout << "-----------------------------------------------\n";
     
     for (double n : n_test) {
         double Vx = calculate_Vx(n);
@@ -34,8 +34,6 @@ bool test_correctness() {
         
         std::cout << std::fixed << std::setprecision(6);
         std::cout << std::setw(10) << n << "      "
-                  << std::setw(10) << Vx << "      "
-                  << std::setw(10) << Vc << "      "
                   << std::setw(10) << Vxc << "      "
                   << std::setw(10) << Vxc * 27.211 << "\n";
     }
