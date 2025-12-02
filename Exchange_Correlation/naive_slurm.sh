@@ -4,12 +4,11 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --gpus-per-task=1
-#SBATCH --output=eigen_all.output
+#SBATCH --output=gpu_vxc.output
 
 cd $SLURM_SUBMIT_DIR
 module load nvidia/cuda
 
-nvcc naive_gpu_eigen.cu test_naive_gpu_eigen.cu -o gpu_eigen \
-    -lcusolver -lcublas
+nvcc -O3 -std=c++11 gpu_test_Vxc.cu -o gpu_test_Vxc
 
-./gpu_eigen
+./gpu_test_Vxc
