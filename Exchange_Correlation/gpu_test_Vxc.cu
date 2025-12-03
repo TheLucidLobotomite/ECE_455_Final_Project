@@ -11,7 +11,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <chrono>
-#include "gpu_Vxc_optimized.cu"
+#include "gpu_Vxc.cu"
 
 bool test_correctness() {
     std::cout << "\n=== Correctness Tests (Optimized API) ===\n\n";
