@@ -1,6 +1,6 @@
 /**
  * Test Suite for Unified CPU Implementation
- * Tests correctness and performance across different thread counts
+ * Tests correctness and performance across different thread counts and grid sizes
  */
 
 #include <iostream>
@@ -166,6 +166,54 @@ void benchmark_thread_scaling() {
     std::cout << "\n";
 }
 
+void benchmark_grid_sizes() {
+    std::cout << "\n=== Grid Size Scaling Benchmark ===\n\n";
+    
+    std::vector<size_t> grid_sizes = {1000000, 10000000, 100000000};  // 1M, 10M, 100M
+    std::vector<int> num_runs_per_size = {100, 20, 5};  // Fewer runs for larger grids
+    
+    int num_threads = omp_get_max_threads();
+    std::cout << "Using " << num_threads << " threads\n\n";
+    
+    std::cout << "Grid Size        Runs    Avg Time (ms)    Throughput (M pts/s)\n";
+    std::cout << "--------------------------------------------------------------------\n";
+    
+    for (size_t idx = 0; idx < grid_sizes.size(); ++idx) {
+        size_t grid_size = grid_sizes[idx];
+        int num_runs = num_runs_per_size[idx];
+        
+        std::vector<double> n_data(grid_size);
+        std::vector<double> vxc_result(grid_size);
+        
+        // Generate test data
+        for (size_t i = 0; i < grid_size; ++i) {
+            n_data[i] = 0.1 * std::exp(-static_cast<double>(i) / grid_size);
+        }
+        
+        // Warm-up run
+        calculate_vxc(n_data.data(), vxc_result.data(), grid_size, num_threads);
+        
+        double total_time = 0.0;
+        for (int run = 0; run < num_runs; ++run) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            calculate_vxc(n_data.data(), vxc_result.data(), grid_size, num_threads);
+            auto t1 = std::chrono::high_resolution_clock::now();
+            
+            double ms = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count() / 1e6;
+            total_time += ms;
+        }
+        
+        double avg_time = total_time / num_runs;
+        double throughput = grid_size / (avg_time / 1000.0) / 1e6;
+        
+        std::cout << std::setw(10) << grid_size << "      "
+                  << std::setw(4) << num_runs << "    "
+                  << std::fixed << std::setprecision(2) << std::setw(12) << avg_time << "      "
+                  << std::setprecision(2) << std::setw(10) << throughput << "\n";
+    }
+    std::cout << "\n";
+}
+
 void benchmark_iterative_usage() {
     std::cout << "\n=== Iterative Usage Benchmark ===\n\n";
     
@@ -238,15 +286,8 @@ int main() {
     
     // Run benchmarks
     benchmark_thread_scaling();
+    benchmark_grid_sizes();
     benchmark_iterative_usage();
     
     return 0;
 }
-
-/*
- * COMPILATION & RUN:
- *   g++ -O3 -march=native -fopenmp -std=c++11 cpu_test_Vxc.cpp -o cpu_test && ./cpu_test
- * 
- * To test specific thread count:
- *   OMP_NUM_THREADS=4 ./cpu_test
- */
