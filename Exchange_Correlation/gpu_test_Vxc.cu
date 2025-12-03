@@ -229,40 +229,5 @@ int main() {
     
     // Run performance comparison
     benchmark_comparison();
-    
-    std::cout << "====================================================\n";
-    std::cout << "  Usage Example for Your Iterative Code:\n";
-    std::cout << "====================================================\n";
-    std::cout << R"(
-// Initialize once before your iteration loop
-VxcContext* ctx = vxc_init(grid_size, true);
-
-// Main iteration loop
-for (int iter = 0; iter < num_iterations; iter++) {
-    // Update density in pinned buffer
-    for (size_t i = 0; i < grid_size; i++) {
-        ctx->h_n_pinned[i] = your_density[i];
-    }
-    
-    // Compute Vxc (uses pinned buffers)
-    vxc_compute_pinned(ctx, grid_size);
-    
-    // Read results from pinned buffer
-    for (size_t i = 0; i < grid_size; i++) {
-        your_potential[i] = ctx->h_vxc_pinned[i];
-    }
-}
-
-// Cleanup once after all iterations
-vxc_cleanup(ctx);
-)" << "\n";
-    
-    std::cout << "====================================================\n";
-    
     return 0;
 }
-
-/*
- * COMPILATION & RUN:
- *   nvcc -O3 -std=c++11 gpu_test_Vxc_optimized.cu -o gpu_test_opt && ./gpu_test_opt
- */
