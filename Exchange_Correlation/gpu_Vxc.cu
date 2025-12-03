@@ -1,13 +1,12 @@
 /**
- * Exchange-Correlation Potential (CUDA GPU - OPTIMIZED)
- * Optimizations for iterative usage:
- * - Persistent GPU memory allocation
- * - Pinned host memory for faster transfers
- * - Context-based to avoid repeated malloc/free
+ * Exchange-Correlation Potential - Perdew-Wang 1992 (CUDA GPU - OPTIMIZED)
+ * Optimized for iterative usage with persistent allocation and pinned memory
+ * 
+ * Reference: Phys. Rev. B 45, 13244 (1992)
  */
 
-#ifndef GPU_VXC_OPTIMIZED_CU_H
-#define GPU_VXC_OPTIMIZED_CU_H
+#ifndef GPU_VXC_CU_H
+#define GPU_VXC_CU_H
 
 #include <cuda_runtime.h>
 #include <cstdio>
@@ -26,7 +25,7 @@
         } \
     } while(0)
 
-// Parameters for epsilon_c(r_s, 0) from T-Money's Table I
+// Parameters for epsilon_c(r_s, 0) from Table I - unpolarized only
 __constant__ double d_A = 0.031091;
 __constant__ double d_alpha1 = 0.21370;
 __constant__ double d_beta1 = 7.5957;
@@ -35,7 +34,7 @@ __constant__ double d_beta3 = 1.6382;
 __constant__ double d_beta4 = 0.49294;
 
 /**
- * LDA Exchange Potential
+ * LDA Exchange Potential - GPU version
  */
 __device__ inline double vx_lda_gpu(double n) {
     const double Cx = 0.738558766382022;
@@ -43,7 +42,7 @@ __device__ inline double vx_lda_gpu(double n) {
 }
 
 /**
- * Correlation energy per electron
+ * Correlation energy per electron - GPU version
  */
 __device__ inline double epsilon_c_gpu(double rs) {
     double rs_sqrt = sqrt(rs);
@@ -57,7 +56,7 @@ __device__ inline double epsilon_c_gpu(double rs) {
 }
 
 /**
- * LDA Correlation Potential
+ * LDA Correlation Potential - GPU version
  */
 __device__ inline double vc_pw92_gpu(double n) {
     const double rs = pow(3.0 / (4.0 * PI_CUDA * n), 1.0/3.0);
@@ -85,77 +84,39 @@ __global__ void vxc_kernel(const double* n, double* vxc, size_t size) {
 }
 
 /**
- * Context structure for persistent GPU memory
+ * Context structure for persistent GPU memory with pinned host memory
  */
 struct VxcContext {
     double *d_n;           // Device memory for input density
     double *d_vxc;         // Device memory for output potential
-    double *h_n_pinned;    // Pinned host memory for input (optional)
-    double *h_vxc_pinned;  // Pinned host memory for output (optional)
+    double *h_n_pinned;    // Pinned host memory for input
+    double *h_vxc_pinned;  // Pinned host memory for output
     size_t capacity;       // Maximum size allocated
-    bool use_pinned;       // Whether pinned memory is allocated
 };
 
 /**
- * Initialize context with persistent GPU allocations
+ * Initialize context with persistent GPU allocations and pinned host memory
  * 
  * @param max_size Maximum number of grid points expected
- * @param use_pinned_memory If true, also allocates pinned host memory for faster transfers
  * @return Pointer to initialized context
  */
-inline VxcContext* vxc_init(size_t max_size, bool use_pinned_memory = true) {
+inline VxcContext* vxc_init(size_t max_size) {
     VxcContext* ctx = new VxcContext;
     ctx->capacity = max_size;
-    ctx->use_pinned = use_pinned_memory;
     
     // Allocate device memory
     CUDA_CHECK(cudaMalloc(&ctx->d_n, max_size * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&ctx->d_vxc, max_size * sizeof(double)));
     
-    // Optionally allocate pinned host memory for faster PCIe transfers
-    if (use_pinned_memory) {
-        CUDA_CHECK(cudaMallocHost(&ctx->h_n_pinned, max_size * sizeof(double)));
-        CUDA_CHECK(cudaMallocHost(&ctx->h_vxc_pinned, max_size * sizeof(double)));
-    } else {
-        ctx->h_n_pinned = nullptr;
-        ctx->h_vxc_pinned = nullptr;
-    }
+    // Allocate pinned host memory for faster PCIe transfers
+    CUDA_CHECK(cudaMallocHost(&ctx->h_n_pinned, max_size * sizeof(double)));
+    CUDA_CHECK(cudaMallocHost(&ctx->h_vxc_pinned, max_size * sizeof(double)));
     
     return ctx;
 }
 
 /**
- * Compute Vxc using persistent context
- * 
- * @param ctx Context with pre-allocated memory
- * @param h_n Host array with electron density (can be regular or pinned)
- * @param h_vxc Host array for output potential (can be regular or pinned)
- * @param size Number of grid points (must be <= ctx->capacity)
- */
-inline void vxc_compute(VxcContext* ctx, const double* h_n, double* h_vxc, size_t size) {
-    if (size > ctx->capacity) {
-        fprintf(stderr, "Error: size %zu exceeds allocated capacity %zu\n", size, ctx->capacity);
-        exit(EXIT_FAILURE);
-    }
-    
-    // Copy input to device
-    CUDA_CHECK(cudaMemcpy(ctx->d_n, h_n, size * sizeof(double), cudaMemcpyHostToDevice));
-    
-    // Launch kernel
-    int blockSize = 256;
-    int numBlocks = (size + blockSize - 1) / blockSize;
-    vxc_kernel<<<numBlocks, blockSize>>>(ctx->d_n, ctx->d_vxc, size);
-    
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-    
-    // Copy result back to host
-    CUDA_CHECK(cudaMemcpy(h_vxc, ctx->d_vxc, size * sizeof(double), cudaMemcpyDeviceToHost));
-}
-
-/**
  * Compute Vxc using pinned memory buffers (fastest option)
- * Only works if context was initialized with use_pinned_memory=true
  * 
  * Usage pattern:
  *   1. Copy your data to ctx->h_n_pinned
@@ -166,10 +127,6 @@ inline void vxc_compute(VxcContext* ctx, const double* h_n, double* h_vxc, size_
  * @param size Number of grid points
  */
 inline void vxc_compute_pinned(VxcContext* ctx, size_t size) {
-    if (!ctx->use_pinned) {
-        fprintf(stderr, "Error: context not initialized with pinned memory\n");
-        exit(EXIT_FAILURE);
-    }
     if (size > ctx->capacity) {
         fprintf(stderr, "Error: size %zu exceeds allocated capacity %zu\n", size, ctx->capacity);
         exit(EXIT_FAILURE);
@@ -197,28 +154,10 @@ inline void vxc_cleanup(VxcContext* ctx) {
     if (ctx) {
         CUDA_CHECK(cudaFree(ctx->d_n));
         CUDA_CHECK(cudaFree(ctx->d_vxc));
-        
-        if (ctx->use_pinned) {
-            CUDA_CHECK(cudaFreeHost(ctx->h_n_pinned));
-            CUDA_CHECK(cudaFreeHost(ctx->h_vxc_pinned));
-        }
-        
+        CUDA_CHECK(cudaFreeHost(ctx->h_n_pinned));
+        CUDA_CHECK(cudaFreeHost(ctx->h_vxc_pinned));
         delete ctx;
     }
 }
 
-// ============================================================================
-// Legacy API (for backward compatibility - not recommended for iterative use)
-// ============================================================================
-
-/**
- * One-shot calculation (legacy interface)
- * NOTE: For iterative calculations, use the context API above instead!
- */
-inline void calculate_vxc_cuda(const double* h_n, double* h_vxc, size_t size) {
-    VxcContext* ctx = vxc_init(size, false);
-    vxc_compute(ctx, h_n, h_vxc, size);
-    vxc_cleanup(ctx);
-}
-
-#endif // GPU_VXC_OPTIMIZED_CU_H
+#endif // GPU_VXC_CU_H
