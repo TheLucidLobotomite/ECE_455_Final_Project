@@ -64,12 +64,13 @@ void free_matrix(double** mat, int n) {
 int main() {
     printf("\n=== LAPACK EIGENVALUE SOLVER BENCHMARK ===\n\n");
 
-    const int n = 175;
+    const int n = 100;
     const int num_runs = 100;
     const double sparsity = 0.01;
     double* times_ms = (double*)malloc(num_runs * sizeof(double));
 
-    printf("Running %d iterations of %dx%d sparse Hamiltonian eigensolve...\n\n", num_runs, n, n);
+    printf("Running %d iterations of %dx%d sparse Hamiltonian eigensolve...\n\n", 
+           num_runs, n, n);
 
     for (int run = 0; run < num_runs; run++) {
         // Create a new random matrix for each run
@@ -83,8 +84,6 @@ int main() {
 
         double ms = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count() / 1e6;
         times_ms[run] = ms;
-
-        //printf("Run %2d: %.6f ms\n", run + 1, ms);
 
         // Cleanup
         free_eigen_result(r);
@@ -114,16 +113,6 @@ int main() {
     printf("Max time:      %.6f ms\n", max_time);
     printf("\n");
 
-    /*
-    printf("All times (ms):\n[");
-    for (int i = 0; i < num_runs; i++) {
-        printf("%.6f", times_ms[i]);
-        if (i < num_runs - 1) printf(", ");
-    }
-    printf("]\n\n");
-
     free(times_ms);
-    */
-   
     return 0;
 }
