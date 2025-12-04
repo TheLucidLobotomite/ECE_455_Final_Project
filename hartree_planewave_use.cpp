@@ -9,6 +9,8 @@
 #include <sstream>
 #include <iomanip>
 
+#define PI 3.14159265358979323846
+
 namespace numint
 {
     struct TimedResult
@@ -55,7 +57,7 @@ namespace numint
             return {0.0, 0.0};
         }
 
-        const double two_pi = 2.0 * M_PI;
+        const double two_pi = 2.0 * PI;
 
         // creates complex plains in K-space and real space for the wave functions, density functions and poteintals
         fftw_complex *psi_k = (fftw_complex *)fftw_malloc(sizeof(fftw_complex) * Ntot);
@@ -141,7 +143,7 @@ namespace numint
                        
                         // find electron-electron poteintal
                       
-                        double factor = 4.0 * M_PI / G2;
+                        double factor = 4.0 * PI / G2;
                         double re = n_k[n][0];
                         double im = n_k[n][1];
 
@@ -154,7 +156,7 @@ namespace numint
                         double smooth = exp(-0.25 * G2 * sigma * sigma);
 
                         // Add smoothed Coulomb nuclear term  -4πZ/G² e^{-(σG)²/4}
-                        VH_k[n][0] += -4.0 * M_PI * Z * smooth / G2;
+                        VH_k[n][0] += -4.0 * PI * Z * smooth / G2;
                     }
                 }
             }
@@ -221,7 +223,7 @@ namespace numint
             return {0.0, 0.0};
         }
 
-        const double two_pi = 2.0 * M_PI;
+        const double two_pi = 2.0 * PI;
         fftw_init_threads();
         fftw_plan_with_nthreads(8);
 
@@ -311,7 +313,7 @@ namespace numint
                     {
                        // find electron-electron poteintal
                       
-                        double factor = 4.0 * M_PI / G2;
+                        double factor = 4.0 * PI / G2;
                         double re = n_k[n][0];
                         double im = n_k[n][1];
 
@@ -324,7 +326,7 @@ namespace numint
                         double smooth = exp(-0.25 * G2 * sigma * sigma);
 
                         // Add smoothed Coulomb nuclear term  -4πZ/G² e^{-(σG)²/4}
-                        VH_k[n][0] += -4.0 * M_PI * Z * smooth / G2;
+                        VH_k[n][0] += -4.0 * PI * Z * smooth / G2;
                     }
                 }
             }
