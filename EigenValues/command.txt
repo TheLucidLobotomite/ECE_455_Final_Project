@@ -1,0 +1,1 @@
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH" ; $env:OPENBLAS_NUM_THREADS = "1" ; C:\msys64\ucrt64\bin\g++.exe cpu_eigen.cpp test_cpu_eigen.cpp -o test_cpu_eigen.exe -std=c++11 -O3 -march=native -I"C:\msys64\ucrt64\include" -L"C:\msys64\ucrt64\lib" -lopenblas ; .\test_cpu_eigen.exe
