@@ -1,0 +1,1 @@
+$env:PATH = "C:\msys64\ucrt64\bin;C:\msys64\ucrt64\lib;" + $env:PATH; g++ lobotomites_main_test.cpp -o lobotomites_main_test.exe -std=c++11 -O3 -march=native -I"C:\msys64\ucrt64\include" -L"C:\msys64\ucrt64\lib" -lfftw3; .\lobotomites_main_test.exe
