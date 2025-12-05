@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <cmath>
 
+#define PI 3.14159265358979323846
+
 struct UPF {
 
     std::string element;
@@ -192,10 +194,10 @@ double Vnl_GGp(UPF& upf, double G, double GPrime) {
         double j0 = (x < 1e-8) ? 1.0 : sin(x)/x;        // spherical Bessel j₀(x)
         form_factor += upf.beta[0][i] * j0 * upf.r[i]*upf.r[i] * upf.rab[i];  // ∫ β(r) j₀(qr) r² dr
     }
-    form_factor *= 4.0 * M_PI;
+    form_factor *= 4.0 * PI;
     return upf.D[0][0] * form_factor;   // this is ⟨G|Vnl|G′⟩
 }
-
+/*
 int main(){
     UPF test;
     std::string filename = "C:\\Users\\Charlie\\Documents\\ECE 455\\Test\\Test.UPF";
@@ -203,4 +205,6 @@ int main(){
 
     return 1;
 }
+*/
+
 

@@ -1,12 +1,17 @@
+#ifndef LOBOTOMITES_MAIN_H
+#define LOBOTOMITES_MAIN_H
+
 #include <iostream>
 #include <iomanip>
 #include <cmath>
 #include <vector>
 #include <complex>
+#include <chrono>
 #include <fftw3.h>
 #include "cpu_Vxc.cpp"
 #include "cpu_eigen.cpp"
 #include "hartree_planewave_use.cpp"
+#include "pseudopotentials.cpp"
 
 #define PI 3.14159265358979323846
 
@@ -49,6 +54,10 @@ struct DFTContext {
     std::vector<double> Ck_imag;    // Wave function coefficients (imag part)
     fftw_complex* vhart_g;          // Hartree potential in G-space
     
+    // Pseudopotentials
+    UPF* pseudopot;                 // Pseudopotential data
+    bool use_pseudopot;             // Flag to enable/disable pseudopotentials
+    
     // Wave functions
     std::vector<std::vector<std::complex<double>>> psi;  // Wave functions psi[band][G]
     std::vector<double> eigenvalues;                      // Eigenvalues (energies)
@@ -63,10 +72,9 @@ struct DFTContext {
 
 /**
  * Initialize reciprocal lattice vectors
- * For simple cubic: b_i = 2π/a * e_i
  */
 void init_reciprocal_lattice(DFTContext* ctx) {
-    double a = ctx->a1[0];  // Lattice constant
+    double a = ctx->a1[0];
     
     ctx->b1[0] = 2.0 * PI / a; ctx->b1[1] = 0.0;           ctx->b1[2] = 0.0;
     ctx->b2[0] = 0.0;           ctx->b2[1] = 2.0 * PI / a; ctx->b2[2] = 0.0;
@@ -154,7 +162,7 @@ void setup_fft_grid(DFTContext* ctx) {
 }
 
 /**
- * Initialize density - start with uniform density
+ * Initialize density
  */
 void init_density(DFTContext* ctx) {
     double rho0 = ctx->nelec / ctx->cell_volume;
@@ -167,7 +175,7 @@ void init_density(DFTContext* ctx) {
 }
 
 /**
- * Compute Vxc in real space using cpu_Vxc.cpp
+ * Compute Vxc in real space
  */
 void compute_vxc_realspace(DFTContext* ctx) {
     for (int i = 0; i < ctx->nrxx; i++) {
@@ -193,13 +201,11 @@ void vxc_r2g(DFTContext* ctx) {
 }
 
 /**
- * Compute Hartree potential using hartree_planewave_use.cpp
+ * Compute Hartree potential
  */
 void compute_vhartree(DFTContext* ctx) {
     using namespace numint;
     
-    // Prepare wave function coefficients from current density
-    // Transform density to k-space to get coefficients
     for (int i = 0; i < ctx->nrxx; i++) {
         ctx->rho_r[i] = std::sqrt(std::fmax(ctx->rho_r[i], 0.0));
     }
@@ -211,24 +217,17 @@ void compute_vhartree(DFTContext* ctx) {
         ctx->Ck_imag[i] = ctx->rho_g[i][1];
     }
     
-    // Compute Hartree potential at each grid point and store in vhart_g
-    // For efficiency, we compute at representative points and interpolate
-    // Here we'll use a simplified approach: compute average Hartree potential
-    
     double Lx = ctx->a1[0];
     double Ly = ctx->a2[1];
     double Lz = ctx->a3[2];
     
-    // Compute at center point as representative value
-    TimedResult vh_center = Vh_PlaneWave_3D_s(
+    TimedResult vh_center = Vh_PlaneWave_3D_p(
         ctx->Ck_real, ctx->Ck_imag,
         Lx, Ly, Lz,
         ctx->nr1, ctx->nr2, ctx->nr3,
         ctx->nr1/2, ctx->nr2/2, ctx->nr3/2
     );
     
-    // For simplicity, use uniform Hartree potential (diagonal approximation)
-    // In a full implementation, you'd compute V_H(G) properly
     for (int i = 0; i < ctx->nrxx; i++) {
         ctx->vhart_g[i][0] = vh_center.value / ctx->nrxx;
         ctx->vhart_g[i][1] = 0.0;
@@ -241,18 +240,25 @@ void compute_vhartree(DFTContext* ctx) {
 void build_hamiltonian(DFTContext* ctx, double** H) {
     int npw = ctx->npw;
     
+    auto t_start = std::chrono::high_resolution_clock::now();
+    
     for (int i = 0; i < npw; i++) {
         for (int j = 0; j < npw; j++) {
             H[i][j] = 0.0;
         }
     }
     
-    // Add kinetic energy (diagonal)
+    // Kinetic energy
     for (int i = 0; i < npw; i++) {
         H[i][i] = ctx->gvectors[i].ekin;
     }
     
-    // Add potential terms (diagonal approximation)
+    auto t_kin = std::chrono::high_resolution_clock::now();
+    double time_kin = std::chrono::duration<double>(t_kin - t_start).count();
+    std::cout << "    Kinetic energy: " << std::fixed << std::setprecision(6) << time_kin << " s\n";
+    
+    // Vxc potential
+    auto t_vxc_start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < npw; i++) {
         int h = ctx->gvectors[i].h;
         int k = ctx->gvectors[i].k;
@@ -264,9 +270,51 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
         
         if (ih >= 0 && ih < ctx->nr1 && ik >= 0 && ik < ctx->nr2 && il >= 0 && il < ctx->nr3) {
             int idx = ih * (ctx->nr2 * ctx->nr3) + ik * ctx->nr3 + il;
-            
-            H[i][i] += ctx->vxc_g[idx][0] + ctx->vhart_g[idx][0];
+            H[i][i] += ctx->vxc_g[idx][0];
         }
+    }
+    auto t_vxc_end = std::chrono::high_resolution_clock::now();
+    double time_vxc = std::chrono::duration<double>(t_vxc_end - t_vxc_start).count();
+    std::cout << "    Vxc contribution: " << std::fixed << std::setprecision(6) << time_vxc << " s\n";
+    
+    // Hartree potential
+    auto t_hartree_start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < npw; i++) {
+        int h = ctx->gvectors[i].h;
+        int k = ctx->gvectors[i].k;
+        int l = ctx->gvectors[i].l;
+        
+        int ih = (h >= 0) ? h : h + ctx->nr1;
+        int ik = (k >= 0) ? k : k + ctx->nr2;
+        int il = (l >= 0) ? l : l + ctx->nr3;
+        
+        if (ih >= 0 && ih < ctx->nr1 && ik >= 0 && ik < ctx->nr2 && il >= 0 && il < ctx->nr3) {
+            int idx = ih * (ctx->nr2 * ctx->nr3) + ik * ctx->nr3 + il;
+            H[i][i] += ctx->vhart_g[idx][0];
+        }
+    }
+    auto t_hartree_end = std::chrono::high_resolution_clock::now();
+    double time_hartree = std::chrono::duration<double>(t_hartree_end - t_hartree_start).count();
+    std::cout << "    Hartree contribution: " << std::fixed << std::setprecision(6) << time_hartree << " s\n";
+    
+    // Pseudopotential
+    if (ctx->use_pseudopot && ctx->pseudopot != nullptr) {
+        auto t_pseudo_start = std::chrono::high_resolution_clock::now();
+        std::cout << "  Adding pseudopotential contributions...\n";
+        
+        for (int i = 0; i < npw; i++) {
+            double Gi = std::sqrt(ctx->gvectors[i].g2);
+            
+            for (int j = 0; j < npw; j++) {
+                double Gj = std::sqrt(ctx->gvectors[j].g2);
+                double vnl = Vnl_GGp(*ctx->pseudopot, Gi, Gj);
+                H[i][j] += vnl;
+            }
+        }
+        
+        auto t_pseudo_end = std::chrono::high_resolution_clock::now();
+        double time_pseudo = std::chrono::duration<double>(t_pseudo_end - t_pseudo_start).count();
+        std::cout << "    Pseudopotential contribution: " << std::fixed << std::setprecision(6) << time_pseudo << " s\n";
     }
 }
 
@@ -342,7 +390,6 @@ double compute_total_energy(DFTContext* ctx) {
         e_xc += n * vxc * dv;
     }
     
-    // Hartree energy (simplified)
     for (int i = 0; i < ctx->nrxx; i++) {
         e_hartree += 0.5 * ctx->rho_r[i] * ctx->vhart_g[0][0] * dv;
     }
@@ -369,26 +416,38 @@ void run_scf(DFTContext* ctx) {
         std::cout << "SCF Iteration " << iter << "\n";
         std::cout << std::string(50, '-') << "\n";
         
-        // 1. Compute Vxc
         std::cout << "  Computing Vxc...\n";
+        auto t_vxc_step_start = std::chrono::high_resolution_clock::now();
         compute_vxc_realspace(ctx);
         vxc_r2g(ctx);
+        auto t_vxc_step_end = std::chrono::high_resolution_clock::now();
+        double time_vxc_step = std::chrono::duration<double>(t_vxc_step_end - t_vxc_step_start).count();
+        std::cout << "    Total Vxc step time: " << std::fixed << std::setprecision(6) << time_vxc_step << " s\n";
         
-        // 2. Compute Hartree potential
         std::cout << "  Computing Hartree potential...\n";
+        auto t_hartree_step_start = std::chrono::high_resolution_clock::now();
         compute_vhartree(ctx);
+        auto t_hartree_step_end = std::chrono::high_resolution_clock::now();
+        double time_hartree_step = std::chrono::duration<double>(t_hartree_step_end - t_hartree_step_start).count();
+        std::cout << "    Total Hartree step time: " << std::fixed << std::setprecision(6) << time_hartree_step << " s\n";
         
-        // 3. Build Hamiltonian
         std::cout << "  Building Hamiltonian...\n";
+        auto t_build_start = std::chrono::high_resolution_clock::now();
         double** H = new double*[ctx->npw];
         for (int i = 0; i < ctx->npw; i++) {
             H[i] = new double[ctx->npw];
         }
         build_hamiltonian(ctx, H);
+        auto t_build_end = std::chrono::high_resolution_clock::now();
+        double time_build = std::chrono::duration<double>(t_build_end - t_build_start).count();
+        std::cout << "    Total Hamiltonian build time: " << std::fixed << std::setprecision(6) << time_build << " s\n";
         
-        // 4. Solve eigenvalue problem
         std::cout << "  Diagonalizing (" << ctx->npw << "x" << ctx->npw << ")...\n";
+        auto t_diag_start = std::chrono::high_resolution_clock::now();
         EigenResult* eig = compute_eigenvalues(H, ctx->npw);
+        auto t_diag_end = std::chrono::high_resolution_clock::now();
+        double time_diag = std::chrono::duration<double>(t_diag_end - t_diag_start).count();
+        std::cout << "    Diagonalization time: " << std::fixed << std::setprecision(6) << time_diag << " s\n";
         
         ctx->eigenvalues.resize(ctx->nbnd);
         ctx->psi.resize(ctx->nbnd);
@@ -406,14 +465,19 @@ void run_scf(DFTContext* ctx) {
         }
         std::cout << "\n";
         
-        // 5. Compute new density
         std::cout << "  Computing new density...\n";
+        auto t_density_start = std::chrono::high_resolution_clock::now();
         compute_density_from_wfn(ctx);
+        auto t_density_end = std::chrono::high_resolution_clock::now();
+        double time_density = std::chrono::duration<double>(t_density_end - t_density_start).count();
+        std::cout << "    Density computation time: " << std::fixed << std::setprecision(6) << time_density << " s\n";
         
-        // 6. Mix densities
+        auto t_mix_start = std::chrono::high_resolution_clock::now();
         mix_density(ctx, rho_in, ctx->rho_r);
+        auto t_mix_end = std::chrono::high_resolution_clock::now();
+        double time_mix = std::chrono::duration<double>(t_mix_end - t_mix_start).count();
+        std::cout << "    Density mixing time: " << std::fixed << std::setprecision(6) << time_mix << " s\n";
         
-        // 7. Compute total energy
         double e_total = compute_total_energy(ctx);
         double de = std::abs(e_total - e_old);
         
@@ -463,45 +527,4 @@ void cleanup_dft_context(DFTContext* ctx) {
     fftw_cleanup();
 }
 
-/**
- * Main program
- */
-int main() {
-    std::cout << "========================================\n";
-    std::cout << "Plane-Wave DFT Code - Full Integration\n";
-    std::cout << "========================================\n\n";
-    
-    DFTContext ctx;
-    
-    double alat = 6.767109;
-    ctx.a1[0] = alat; ctx.a1[1] = 0.0;   ctx.a1[2] = 0.0;
-    ctx.a2[0] = 0.0;   ctx.a2[1] = alat; ctx.a2[2] = 0.0;
-    ctx.a3[0] = 0.0;   ctx.a3[1] = 0.0;   ctx.a3[2] = alat;
-    
-    ctx.ecut_ry = 20.0;           // Reduced for faster testing
-    ctx.nelec = 8;                // Single Fe atom
-    ctx.nbnd = ctx.nelec / 2 + 3;
-    
-    ctx.mixing_beta = 0.3;
-    ctx.conv_thr = 1.0e-6;
-    ctx.max_iter = 50;
-    
-    std::cout << "System: Simple cubic Fe\n";
-    std::cout << "Lattice constant: " << alat << " Bohr\n";
-    std::cout << "Energy cutoff: " << ctx.ecut_ry << " Ry\n";
-    std::cout << "Electrons: " << ctx.nelec << "\n";
-    std::cout << "Bands: " << ctx.nbnd << "\n\n";
-    
-    init_reciprocal_lattice(&ctx);
-    generate_gvectors(&ctx);
-    setup_fft_grid(&ctx);
-    init_density(&ctx);
-    
-    run_scf(&ctx);
-    
-    cleanup_dft_context(&ctx);
-    
-    std::cout << "Program completed successfully!\n";
-    
-    return 0;
-}
+#endif // LOBOTOMITES_MAIN_H
