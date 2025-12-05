@@ -9,7 +9,7 @@
 #include <chrono>
 #include <fftw3.h>
 #include "cpu_Vxc.cpp"
-#include "naive_gpu_eigen.cu"  // GPU eigenvalue solver instead of CPU
+#include "gpu_eigen.cu"  // GPU eigenvalue solver instead of CPU
 #include "hartree_planewave_use.cpp"
 #include "pseudopotentials.cpp"
 
