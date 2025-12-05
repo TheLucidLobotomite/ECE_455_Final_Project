@@ -7,15 +7,12 @@
 #include <fftw3.h>
 #include <fstream>
 #include <sstream>
+#include "hartree_planewave_use.hpp"
 #include <iomanip>
 
 namespace numint
 {
-    struct TimedResult
-    {
-        double value;  // e.g. Hartree potential at one grid point
-        double time_s; // runtime in seconds
-    };
+    
     // creates Flattened linear index for grid
     inline int idx3D(int ix, int iy, int iz, int Ny, int Nz)
     {
@@ -31,7 +28,7 @@ namespace numint
     /*
     sequentail calculation of hartree potienail
     Ck_real, Ck_imag: plane-wave coefficients in reciprocal space (complex numbers split into real/imag parts), one per grid point in G-space.
-    Lx, Ly, Lz: physical box size in x, y, z (so G = 2π n / L).
+    Lx, Ly, Lz: physical box size in x, y, z (so G = 2pi n / L).
     Nx, Ny, Nz: grid resolution in each direction.
     ix_eval, iy_eval, iz_eval: which real-space grid point you want VH(r)
 
@@ -153,7 +150,7 @@ namespace numint
                         double sigma = 0.10; // smoothing width (bohr)
                         double smooth = exp(-0.25 * G2 * sigma * sigma);
 
-                        // Add smoothed Coulomb nuclear term  -4πZ/G² e^{-(σG)²/4}
+                        // Add smoothed Coulomb nuclear term 
                         VH_k[n][0] += -4.0 * M_PI * Z * smooth / G2;
                     }
                 }
@@ -194,7 +191,7 @@ namespace numint
     /*
    parallel calculation of hartree potienail
    Ck_real, Ck_imag: plane-wave coefficients in reciprocal space (complex numbers split into real/imag parts), one per grid point in G-space.
-   Lx, Ly, Lz: physical box size in x, y, z (so G = 2π n / L).
+   Lx, Ly, Lz: physical box size in x, y, z (so G = 2pi n / L).
    Nx, Ny, Nz: grid resolution in each direction.
    ix_eval, iy_eval, iz_eval: which real-space grid point you want VH(r)
 
