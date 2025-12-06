@@ -26,7 +26,7 @@ extern "C" {
                 double* vr, int* ldvr, double* work, int* lwork, int* info);
 }
 
-bool is_symmetric(double** matrix, int n, double tol = 1e-10) {
+bool is_symmetric_cpu(double** matrix, int n, double tol = 1e-10) {
     for (int i = 0; i < n; i++) {
         for (int j = i + 1; j < n; j++) {
             if (fabs(matrix[i][j] - matrix[j][i]) > tol) {
@@ -56,7 +56,7 @@ EigenResult* compute_eigenvalues(double** matrix, int n) {
         }
     }
 
-    if (is_symmetric(matrix, n)) {
+    if (is_symmetric_cpu(matrix, n)) {
         // Variables needed for LAPACK
         char jobz = 'V';
         char uplo = 'U';

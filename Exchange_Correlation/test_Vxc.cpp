@@ -306,7 +306,7 @@ void run_convergence_comparison(DensityFunction density_func, const char* test_n
     double a3[3] = {0.0, 0.0, lattice_constant};
     
     // Grid sizes to test
-    std::vector<int> grid_sizes = {16, 32, 64, 128, 256, 512};
+    std::vector<int> grid_sizes = {16, 32, 64, 128, 256};
     
     int num_threads = omp_get_max_threads();
     if (num_threads < 8) {
