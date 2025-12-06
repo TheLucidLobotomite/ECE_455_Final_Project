@@ -1,7 +1,8 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-#include "lobotomites_main.cpp"
+#include "lobotomites_main_cpu.cpp"
+#include "lobotomites_main_gpu.cpp"
 
 /**
  * DFT Test Driver Program - WITH FIXED PSEUDOPOTENTIALS
