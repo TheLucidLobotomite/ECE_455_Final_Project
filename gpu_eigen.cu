@@ -10,6 +10,31 @@ typedef struct {
     int matrix_size;    // Size of original matrix
 } EigenResult;
 
+// Forward declare internal CUDA eigensolver
+EigenResult* compute_eigenvalues_gpu_impl(double** matrix, int n);
+
+extern "C" {
+
+// This is the function called by test_dft.cpp
+EigenResult* compute_eigenvalues_gpu(double** matrix, int n) {
+    return compute_eigenvalues_gpu_impl(matrix, n);
+}
+
+// This is the memory-freeing function test_dft.cpp expects
+void free_eigen_result(EigenResult* result) {
+    if (!result) return;
+
+    free(result->values);
+
+    for (int i = 0; i < result->n_eigs; i++)
+        free(result->vectors[i]);
+
+    free(result->vectors);
+    free(result);
+}
+
+} // extern "C"
+
 // ---------- CUDA Error Checking ----------
 #define checkCuda(val) check_cuda((val), #val, __FILE__, __LINE__)
 void check_cuda(cudaError_t err, const char* const func, const char* const file, int line) {
@@ -63,7 +88,7 @@ bool is_symmetric(double** matrix, int n, double tol = 1e-10) {
  * NOTE: This implementation only supports SYMMETRIC matrices.
  * For general matrices, you need CUDA 11+ with cusolverDnDgeev or use CPU LAPACK.
  */
-EigenResult* compute_eigenvalues_gpu(double** matrix, int n) {
+EigenResult* compute_eigenvalues_gpu_impl(double** matrix, int n) {
     // Allocate result structure
     EigenResult* result = (EigenResult*)malloc(sizeof(EigenResult));
     result->n_eigs = n;
@@ -151,15 +176,4 @@ EigenResult* compute_eigenvalues_gpu(double** matrix, int n) {
     free(A_host);
     
     return result;
-}
-
-void free_eigen_result(EigenResult* result) {
-    if (result) {
-        free(result->values);
-        for (int i = 0; i < result->n_eigs; i++) {
-            free(result->vectors[i]);
-        }
-        free(result->vectors);
-        free(result);
-    }
 }

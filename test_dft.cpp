@@ -1,7 +1,7 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-#include "lobotomites_main_cpu.cpp"
+//#include "lobotomites_main_cpu.cpp"
 #include "lobotomites_main_gpu.cpp"
 
 /**
@@ -36,7 +36,7 @@ int main() {
     ctx.nbnd = ctx.nelec / 2 + 3; // Number of bands (occupied + some empty)
     
     // SCF Parameters
-    ctx.mixing_beta = 0.4;        // Density mixing (0.1-0.5 typical)
+    ctx.mixing_beta = 0.5;        // Density mixing (0.1-0.5 typical)
     ctx.conv_thr = 1.0e-6;        // Convergence threshold (Ry)
     ctx.max_iter = 50;            // Maximum SCF iterations
     

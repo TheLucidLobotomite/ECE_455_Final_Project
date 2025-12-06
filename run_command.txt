@@ -1,5 +1,19 @@
 // GPU Verison (egien)
+# Compile CUDA
+nvcc -c gpu_eigen.cu -o gpu_eigen.o -O3 -arch=sm_86
 
+# Compile C++
+g++ test_dft.cpp -c -o test_dft.o -std=c++11 -O3 -fopenmp
+
+# Link
+g++ test_dft.o gpu_eigen.o -o test_dft_gpu \
+    -L/usr/local/cuda/lib64 \
+    -lcudart -lcusolver -lcublas \
+    -lfftw3 -lfftw3_omp -lopenblas \
+    -fopenmp -lpthread
+
+# Run
+./test_dft_gpu
 
 // CPU Version (everything)
 $env:PATH = "C:\msys64\ucrt64\bin;C:\msys64\ucrt64\lib;" + $env:PATH; g++ test_dft.cpp -o test_dft.exe -std=c++11 -O3 -march=native -fopenmp -I"C:\msys64\ucrt64\include" -L"C:\msys64\ucrt64\lib" -lfftw3 -lfftw3_threads -lopenblas; .\test_dft.exe
