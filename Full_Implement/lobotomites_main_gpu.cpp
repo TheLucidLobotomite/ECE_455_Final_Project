@@ -41,8 +41,24 @@ inline EigenResult* compute_eigenvalues(double** matrix, int n) {
     return compute_eigenvalues_gpu(matrix, n);
 }
 
+// ============================================
+// GPU VXC (CUDA)
+// ============================================
+extern "C" {
+    struct VxcContext {
+        double *d_n;           
+        double *d_vxc;         
+        double *h_n_pinned;    
+        double *h_vxc_pinned;  
+        size_t capacity;       
+    };
+    
+    VxcContext* vxc_init(size_t max_size);
+    void vxc_compute_pinned(VxcContext* ctx, size_t size);
+    void vxc_cleanup(VxcContext* ctx);
+}
+
 // Include other components
-#include "cpu_Vxc.cpp"
 #include "hartree_planewave_use.cpp"
 #include "pseudopotentials.cpp"
 
@@ -69,6 +85,9 @@ struct DFTContext {
     fftw_complex* rho_g;            // Density in reciprocal space
     double* vxc_r;                   // Vxc in real space
     fftw_complex* vxc_g;            // Vxc in reciprocal space
+    
+    // GPU Vxc context
+    VxcContext* vxc_ctx;            // Persistent GPU context for Vxc
     
     // Hartree potential
     std::vector<double> Ck_real;    // Wave function coefficients (real part)
@@ -141,7 +160,8 @@ void generate_gvectors(DFTContext* ctx) {
     
     ctx->npw = ctx->gvectors.size();
     std::cout << "Number of plane waves: " << ctx->npw << "\n";
-    std::cout << "Using GPU eigensolve (CUDA/cuSOLVER)\n\n";
+    std::cout << "Using GPU eigensolve (CUDA/cuSOLVER)\n";
+    std::cout << "Using GPU Vxc computation (CUDA)\n\n";
 }
 
 /**
@@ -180,6 +200,10 @@ void setup_fft_grid(DFTContext* ctx) {
     ctx->plan_bwd = fftw_plan_dft_c2r_3d(ctx->nr1, ctx->nr2, ctx->nr3,
                                          ctx->rho_g, ctx->rho_r,
                                          FFTW_ESTIMATE);
+    
+    // Initialize GPU Vxc context
+    ctx->vxc_ctx = vxc_init(ctx->nrxx);
+    std::cout << "GPU Vxc context initialized\n";
     
     std::cout << "FFT plans created\n\n";
 }
@@ -220,12 +244,20 @@ void init_density(DFTContext* ctx) {
 }
 
 /**
- * Compute Vxc in real space
+ * Compute Vxc using GPU
  */
 void compute_vxc_realspace(DFTContext* ctx) {
+    // Copy density to pinned memory
     for (int i = 0; i < ctx->nrxx; i++) {
-        double n = std::fmax(ctx->rho_r[i], 1e-12);
-        ctx->vxc_r[i] = compute_vxc(n);
+        ctx->vxc_ctx->h_n_pinned[i] = std::fmax(ctx->rho_r[i], 1e-12);
+    }
+    
+    // Compute on GPU
+    vxc_compute_pinned(ctx->vxc_ctx, ctx->nrxx);
+    
+    // Copy result back
+    for (int i = 0; i < ctx->nrxx; i++) {
+        ctx->vxc_r[i] = ctx->vxc_ctx->h_vxc_pinned[i];
     }
 }
 
@@ -456,38 +488,36 @@ void run_scf(DFTContext* ctx) {
         std::cout << "SCF Iteration " << iter << "\n";
         std::cout << std::string(50, '-') << "\n";
         
-        std::cout << "  Computing Vxc...\n";
         auto t_vxc_step_start = std::chrono::high_resolution_clock::now();
         compute_vxc_realspace(ctx);
         vxc_r2g(ctx);
         auto t_vxc_step_end = std::chrono::high_resolution_clock::now();
         double time_vxc_step = std::chrono::duration<double>(t_vxc_step_end - t_vxc_step_start).count();
-        std::cout << "    Total Vxc step time: " << std::fixed << std::setprecision(6) << time_vxc_step << " s\n";
+        std::cout << "Vxc (GPU) time: " << std::fixed << std::setprecision(6) << time_vxc_step << " s\n";
         
-        std::cout << "  Computing Hartree potential...\n";
         auto t_hartree_step_start = std::chrono::high_resolution_clock::now();
         compute_vhartree(ctx);
         auto t_hartree_step_end = std::chrono::high_resolution_clock::now();
         double time_hartree_step = std::chrono::duration<double>(t_hartree_step_end - t_hartree_step_start).count();
-        std::cout << "    Total Hartree step time: " << std::fixed << std::setprecision(6) << time_hartree_step << " s\n";
+        std::cout << "Hartree (CPU) time: " << std::fixed << std::setprecision(6) << time_hartree_step << " s\n";
         
-        std::cout << "  Building Hamiltonian...\n";
+        std::cout << "Starting Hamiltonian\n";
         auto t_build_start = std::chrono::high_resolution_clock::now();
         double** H = new double*[ctx->npw];
         for (int i = 0; i < ctx->npw; i++) {
             H[i] = new double[ctx->npw];
         }
+        
         build_hamiltonian(ctx, H);
         auto t_build_end = std::chrono::high_resolution_clock::now();
         double time_build = std::chrono::duration<double>(t_build_end - t_build_start).count();
-        std::cout << "    Total Hamiltonian build time: " << std::fixed << std::setprecision(6) << time_build << " s\n";
+        std::cout << "Total Hamiltonian time: " << std::fixed << std::setprecision(6) << time_build << " s\n";
         
-        std::cout << "  Diagonalizing (" << ctx->npw << "x" << ctx->npw << ")...\n";
         auto t_diag_start = std::chrono::high_resolution_clock::now();
         EigenResult* eig = compute_eigenvalues(H, ctx->npw);
         auto t_diag_end = std::chrono::high_resolution_clock::now();
         double time_diag = std::chrono::duration<double>(t_diag_end - t_diag_start).count();
-        std::cout << "    Diagonalization time: " << std::fixed << std::setprecision(6) << time_diag << " s\n";
+        std::cout << "Diagonalizing (" << ctx->npw << "x" << ctx->npw << ") time: " << std::fixed << std::setprecision(6) << time_diag << " s\n\n";
         
         ctx->eigenvalues.resize(ctx->nbnd);
         ctx->psi.resize(ctx->nbnd);
@@ -499,31 +529,31 @@ void run_scf(DFTContext* ctx) {
             }
         }
         
-        std::cout << "  Lowest eigenvalues (Ry): ";
+        std::cout << "Lowest eigenvalues (Ry): ";
         for (int i = 0; i < std::min(5, ctx->nbnd); i++) {
             std::cout << std::fixed << std::setprecision(4) << ctx->eigenvalues[i] << " ";
         }
         std::cout << "\n";
         
-        std::cout << "  Computing new density...\n";
+        std::cout << "Computing new density...\n";
         auto t_density_start = std::chrono::high_resolution_clock::now();
         compute_density_from_wfn(ctx);
         auto t_density_end = std::chrono::high_resolution_clock::now();
         double time_density = std::chrono::duration<double>(t_density_end - t_density_start).count();
-        std::cout << "    Density computation time: " << std::fixed << std::setprecision(6) << time_density << " s\n";
+        std::cout << "  Density computation time: " << std::fixed << std::setprecision(6) << time_density << " s\n";
         
         auto t_mix_start = std::chrono::high_resolution_clock::now();
         mix_density(ctx, rho_in, ctx->rho_r);
         auto t_mix_end = std::chrono::high_resolution_clock::now();
         double time_mix = std::chrono::duration<double>(t_mix_end - t_mix_start).count();
-        std::cout << "    Density mixing time: " << std::fixed << std::setprecision(6) << time_mix << " s\n";
+        std::cout << "  Density mixing time: " << std::fixed << std::setprecision(6) << time_mix << " s\n\n";
         
         double e_total = compute_total_energy(ctx);
         double de = std::abs(e_total - e_old);
         
-        std::cout << "  Total Energy: " << std::fixed << std::setprecision(8) 
+        std::cout << "Total Energy: " << std::fixed << std::setprecision(8) 
                   << e_total << " Ry\n";
-        std::cout << "  |ΔE|:         " << std::scientific << std::setprecision(3) 
+        std::cout << "|ΔE|:         " << std::scientific << std::setprecision(3) 
                   << de << " Ry\n";
         
         if (iter > 1 && de < ctx->conv_thr) {
@@ -565,6 +595,12 @@ void cleanup_dft_context(DFTContext* ctx) {
     fftw_free(ctx->vxc_g);
     fftw_free(ctx->vhart_g);
     fftw_cleanup();
+    
+    // Cleanup GPU Vxc context
+    if (ctx->vxc_ctx != nullptr) {
+        vxc_cleanup(ctx->vxc_ctx);
+        ctx->vxc_ctx = nullptr;
+    }
     
     if (ctx->Vnl_matrix != nullptr) {
         free_pseudopotential_matrix(ctx->Vnl_matrix, ctx->npw);

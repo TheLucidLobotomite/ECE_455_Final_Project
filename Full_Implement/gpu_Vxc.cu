@@ -3,6 +3,7 @@
  * Optimized for iterative usage with persistent allocation and pinned memory
  * 
  * Reference: Phys. Rev. B 45, 13244 (1992)
+ * Units: RYDBERG atomic units (to match CPU implementation)
  */
 
 #ifndef GPU_VXC_CU_H
@@ -26,18 +27,19 @@
     } while(0)
 
 // Parameters for epsilon_c(r_s, 0) from Table I - unpolarized only
-__constant__ double d_A = 0.031091;
-__constant__ double d_alpha1 = 0.21370;
-__constant__ double d_beta1 = 7.5957;
-__constant__ double d_beta2 = 3.5876;
-__constant__ double d_beta3 = 1.6382;
-__constant__ double d_beta4 = 0.49294;
+// CONVERTED TO RYDBERG UNITS (original Hartree values × 2)
+__constant__ double d_A = 0.062182;        // was 0.031091 in Hartree
+__constant__ double d_alpha1 = 0.21370;    // dimensionless
+__constant__ double d_beta1 = 7.5957;      // dimensionless
+__constant__ double d_beta2 = 3.5876;      // dimensionless
+__constant__ double d_beta3 = 1.6382;      // dimensionless
+__constant__ double d_beta4 = 0.49294;     // dimensionless
 
 /**
- * LDA Exchange Potential - GPU version
+ * LDA Exchange Potential - GPU version (Rydberg units)
  */
 __device__ inline double vx_lda_gpu(double n) {
-    const double Cx = 0.738558766382022;
+    const double Cx = 1.477117532764044;  // Rydberg units
     return -Cx * pow(n, 1.0/3.0);
 }
 
@@ -100,7 +102,7 @@ struct VxcContext {
  * @param max_size Maximum number of grid points expected
  * @return Pointer to initialized context
  */
-inline VxcContext* vxc_init(size_t max_size) {
+extern "C" VxcContext* vxc_init(size_t max_size) {
     VxcContext* ctx = new VxcContext;
     ctx->capacity = max_size;
     
@@ -126,7 +128,7 @@ inline VxcContext* vxc_init(size_t max_size) {
  * @param ctx Context with pinned memory allocated
  * @param size Number of grid points
  */
-inline void vxc_compute_pinned(VxcContext* ctx, size_t size) {
+extern "C" void vxc_compute_pinned(VxcContext* ctx, size_t size) {
     if (size > ctx->capacity) {
         fprintf(stderr, "Error: size %zu exceeds allocated capacity %zu\n", size, ctx->capacity);
         exit(EXIT_FAILURE);
@@ -150,7 +152,7 @@ inline void vxc_compute_pinned(VxcContext* ctx, size_t size) {
 /**
  * Cleanup context and free all allocated memory
  */
-inline void vxc_cleanup(VxcContext* ctx) {
+extern "C" void vxc_cleanup(VxcContext* ctx) {
     if (ctx) {
         CUDA_CHECK(cudaFree(ctx->d_n));
         CUDA_CHECK(cudaFree(ctx->d_vxc));

@@ -1,8 +1,8 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-//#include "lobotomites_main_cpu.cpp"
-#include "lobotomites_main_gpu.cpp"
+#include "lobotomites_main_cpu.cpp"
+//#include "lobotomites_main_gpu.cpp"
 
 /**
  * DFT Test Driver Program - WITH FIXED PSEUDOPOTENTIALS
@@ -11,11 +11,7 @@
 
 int main() {
     std::cout << "========================================\n";
-    std::cout << "Plane-Wave DFT Code - Test Driver\n";
-    std::cout << "  - Kinetic Energy\n";
-    std::cout << "  - Exchange-Correlation (LDA)\n";
-    std::cout << "  - Hartree Potential\n";
-    std::cout << "  - Pseudopotentials (FIXED - Rydberg units)\n";
+    std::cout << "    Plane-Wave DFT Code - Test Driver\n";
     std::cout << "========================================\n\n";
     
     // ============================================
@@ -56,20 +52,20 @@ int main() {
             UPF pp = read_upf(upf_file);
             ctx.pseudopot = new UPF(pp);
             ctx.use_pseudopot = true;
-            std::cout << "✓ Pseudopotential loaded successfully!\n";
+            std::cout << "  Pseudopotential loaded successfully!\n";
             std::cout << "  Element: " << ctx.pseudopot->element << "\n";
             std::cout << "  Z_valence: " << ctx.pseudopot->z_valence << "\n";
             std::cout << "  Mesh points: " << ctx.pseudopot->mesh << "\n";
             std::cout << "  Projectors: " << ctx.pseudopot->nproj << "\n\n";
         } catch (const std::exception& e) {
-            std::cout << "✗ Error loading pseudopotential: " << e.what() << "\n";
+            std::cout << "  Error loading pseudopotential: " << e.what() << "\n";
             std::cout << "  Continuing with all-electron calculation\n\n";
             ctx.use_pseudopot = false;
         }
     } else {
-        std::cout << "⚠ Pseudopotential file not found: " << upf_file << "\n";
+        std::cout << "  Pseudopotential file not found: " << upf_file << "\n";
         std::cout << "  Continuing with all-electron calculation\n";
-        std::cout << "  (Place Fe.UPF in project directory to enable pseudopotentials)\n\n";
+        std::cout << "  (Place .UPF in project directory to enable pseudopotentials)\n\n";
         ctx.use_pseudopot = false;
     }
     
