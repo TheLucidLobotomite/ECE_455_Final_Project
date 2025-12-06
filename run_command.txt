@@ -1,1 +1,5 @@
+// GPU Verison (egien)
+
+
+// CPU Version (everything)
 $env:PATH = "C:\msys64\ucrt64\bin;C:\msys64\ucrt64\lib;" + $env:PATH; g++ test_dft.cpp -o test_dft.exe -std=c++11 -O3 -march=native -fopenmp -I"C:\msys64\ucrt64\include" -L"C:\msys64\ucrt64\lib" -lfftw3 -lfftw3_threads -lopenblas; .\test_dft.exe

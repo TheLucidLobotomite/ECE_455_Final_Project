@@ -3,18 +3,20 @@
         {
             "name": "Win32",
             "includePath": [
-                "${workspaceFolder}/**",
-                "C:/msys64/ucrt64/include"
+                "${workspaceFolder}/**"
             ],
-            "defines": [],
-            "compilerPath": "C:/msys64/ucrt64/bin/g++.exe",
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "compilerPath": "cl.exe",
             "cStandard": "c11",
             "cppStandard": "c++11",
-            "intelliSenseMode": "windows-gcc-x64",
+            "intelliSenseMode": "windows-msvc-x64",
             "browse": {
                 "path": [
-                    "${workspaceFolder}",
-                    "C:/msys64/ucrt64/include"
+                    "${workspaceFolder}"
                 ]
             }
         }

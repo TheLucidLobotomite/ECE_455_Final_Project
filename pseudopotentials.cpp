@@ -5,11 +5,11 @@
 #include <sstream>
 #include <stdio.h>
 #include <cmath>
+#include <chrono>
 
 #define PI 3.14159265358979323846
 
 struct UPF {
-
     std::string element;
     double z_valence;
     bool ultrasoft = false;
@@ -24,8 +24,6 @@ struct UPF {
     std::vector<int> beta_l;
     std::vector<std::vector<double>> D;
     std::vector<std::vector<double>> Q;
-    
-
 };
 
 // trims all the garbage off of the string
@@ -47,9 +45,7 @@ std::vector<double> read_data_for_tag(std::istream& file, const std::string& tag
         std::stringstream ss(line);
         double val;
         while (ss >> val) data.push_back(val);
-
     }
-
     return data;
 }
 
@@ -93,7 +89,6 @@ UPF read_upf(const std::string& filename) {
             if (pos2 != std::string::npos){
                 upf.nproj = std::stoi(line.substr(pos2 + 16, 1));
             }
-        
         }
 
         if (line.find("<PP_MESH") != std::string::npos) mesh = true;
@@ -133,7 +128,6 @@ UPF read_upf(const std::string& filename) {
             }
             upf.beta.push_back(beta);
             upf.beta_l.push_back(angularmomentum);
-
         }
 
         // D_IJ matrix
@@ -167,44 +161,107 @@ UPF read_upf(const std::string& filename) {
                 }
             }
         }
-
-
-        // Augmentation Q_ij(r)
-        /*if ((upf.ultrasoft || upf.paw) && line.find("<PP_QIJ") != std::string::npos){
-            int i,j,l;
-            size_t pos = line.find("<PP_QIJL.");
-            i = std::stoi(line.substr(pos + 10, 1)) - 1;
-            j = std::stoi(line.substr(pos + 12, 1)) - 1;
-            l = std::stoi(line.substr(pos + 14, 1));
-            std::vector<double> rawq = read_data_for_tag(file,"PP_QIJ");
-        }*/
     }
 
     return upf;
-
 }
 
+/**
+ * Compute pseudopotential matrix element in RYDBERG units
+ * FIXED: Converted from Hartree to Rydberg (multiply by 2)
+ */
 double Vnl_GGp(UPF& upf, double G, double GPrime) {
     double q = abs(G - GPrime);           // q = |G - G'| in bohr⁻¹
     double form_factor = 0.0;
+    
     for (int i = 0; i < upf.r.size(); ++i) {
         if (upf.r[i] < 1e-12) continue;
-        double dr = (i==0) ? upf.r[1]-upf.r[0] : upf.r[i]-upf.r[i-1];
         double x = q * upf.r[i];
         double j0 = (x < 1e-8) ? 1.0 : sin(x)/x;        // spherical Bessel j₀(x)
         form_factor += upf.beta[0][i] * j0 * upf.r[i]*upf.r[i] * upf.rab[i];  // ∫ β(r) j₀(qr) r² dr
     }
+    
     form_factor *= 4.0 * PI;
-    return upf.D[0][0] * form_factor;   // this is ⟨G|Vnl|G′⟩
+    
+    // CRITICAL FIX: Convert from Hartree to Rydberg by multiplying by 2
+    return 2.0 * upf.D[0][0] * form_factor;   // Now in Rydberg units
 }
-/*
-int main(){
-    UPF test;
-    std::string filename = "C:\\Users\\Charlie\\Documents\\ECE 455\\Test\\Test.UPF";
-    test = read_upf(filename);
 
-    return 1;
+/**
+ * Pre-compute the full pseudopotential matrix (DENSITY INDEPENDENT!)
+ * This should be called ONCE before the SCF loop
+ * 
+ * @param upf Pseudopotential structure
+ * @param gvectors Vector of G-vectors
+ * @param npw Number of plane waves
+ * @return Pre-computed Vnl matrix (npw x npw)
+ */
+double** precompute_pseudopotential_matrix(UPF& upf, const std::vector<GVector>& gvectors, int npw) {
+    std::cout << "  Pre-computing pseudopotential matrix (" << npw << "x" << npw << ")...\n";
+    
+    // DIAGNOSTIC: Print D[0][0] value
+    std::cout << "\n  DIAGNOSTIC INFO:\n";
+    std::cout << "  D[0][0] = " << upf.D[0][0] << " (should be ~0.1-1.0 in Hartree)\n";
+    std::cout << "  D[0][0] * 2 = " << (2.0 * upf.D[0][0]) << " (Rydberg conversion)\n\n";
+    
+    auto t_start = std::chrono::high_resolution_clock::now();
+    
+    // Allocate matrix
+    double** Vnl = new double*[npw];
+    for (int i = 0; i < npw; i++) {
+        Vnl[i] = new double[npw];
+    }
+    
+    // Track min/max/avg for diagnostics
+    double vnl_min = 1e99, vnl_max = -1e99, vnl_sum = 0.0;
+    int count = 0;
+    
+    // Compute all matrix elements
+    for (int i = 0; i < npw; i++) {
+        double Gi = std::sqrt(gvectors[i].g2);
+        
+        for (int j = 0; j < npw; j++) {
+            double Gj = std::sqrt(gvectors[j].g2);
+            Vnl[i][j] = Vnl_GGp(upf, Gi, Gj);
+            
+            // Track statistics
+            vnl_min = std::min(vnl_min, Vnl[i][j]);
+            vnl_max = std::max(vnl_max, Vnl[i][j]);
+            vnl_sum += Vnl[i][j];
+            count++;
+        }
+        
+        // Progress indicator every 10%
+        if ((i + 1) % (npw / 10 + 1) == 0) {
+            std::cout << "    Progress: " << (100 * (i + 1) / npw) << "%\n";
+        }
+    }
+    
+    auto t_end = std::chrono::high_resolution_clock::now();
+    double time_pseudo = std::chrono::duration<double>(t_end - t_start).count();
+    
+    std::cout << "  Pseudopotential matrix computed in " << std::fixed << std::setprecision(2) 
+              << time_pseudo << " s\n";
+    std::cout << "  (This is done ONCE - will be reused in all SCF iterations)\n\n";
+    
+    // Print diagnostic statistics
+    std::cout << "  PSEUDOPOTENTIAL MATRIX STATISTICS:\n";
+    std::cout << "  Min value: " << std::scientific << std::setprecision(3) << vnl_min << " Ry\n";
+    std::cout << "  Max value: " << std::scientific << std::setprecision(3) << vnl_max << " Ry\n";
+    std::cout << "  Avg value: " << std::scientific << std::setprecision(3) << (vnl_sum / count) << " Ry\n";
+    std::cout << "  (These should be O(1-10) Ry, not O(1000+) Ry)\n\n";
+    
+    return Vnl;
 }
-*/
 
-
+/**
+ * Free pseudopotential matrix
+ */
+void free_pseudopotential_matrix(double** Vnl, int npw) {
+    if (Vnl) {
+        for (int i = 0; i < npw; i++) {
+            delete[] Vnl[i];
+        }
+        delete[] Vnl;
+    }
+}

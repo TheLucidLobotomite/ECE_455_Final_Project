@@ -1,5 +1,5 @@
-#ifndef LOBOTOMITES_MAIN_GPU_H
-#define LOBOTOMITES_MAIN_GPU_H
+#ifndef LOBOTOMITES_MAIN_H
+#define LOBOTOMITES_MAIN_H
 
 #include <iostream>
 #include <iomanip>
@@ -8,15 +8,12 @@
 #include <complex>
 #include <chrono>
 #include <fftw3.h>
-#include "cpu_Vxc.cpp"
-#include "gpu_eigen.cu"  // GPU eigenvalue solver instead of CPU
-#include "hartree_planewave_use.cpp"
-#include "pseudopotentials.cpp"
 
 #define PI 3.14159265358979323846
 
 /**
  * Structure to hold a G-vector and its properties
+ * MOVED BEFORE pseudopotentials.cpp include so it can use it
  */
 struct GVector {
     int h, k, l;           // Miller indices
@@ -24,6 +21,35 @@ struct GVector {
     double g2;             // |G|² in (2π/a)²
     double ekin;           // Kinetic energy ℏ²|G|²/(2m) in Rydberg
 };
+
+// Include CPU/GPU eigensolvers - use whichever is available
+#ifdef USE_GPU_EIGEN
+    // GPU version (CUDA)
+    extern "C" {
+        typedef struct {
+            double* values;
+            double** vectors;
+            int n_eigs;
+            int matrix_size;
+        } EigenResult;
+        
+        EigenResult* compute_eigenvalues_gpu(double** matrix, int n);
+        void free_eigen_result(EigenResult* result);
+    }
+    
+    // Wrapper to use GPU version
+    inline EigenResult* compute_eigenvalues(double** matrix, int n) {
+        return compute_eigenvalues_gpu(matrix, n);
+    }
+#else
+    // CPU version (LAPACK)
+    #include "cpu_eigen.cpp"
+#endif
+
+// Include other components
+#include "cpu_Vxc.cpp"
+#include "hartree_planewave_use.cpp"
+#include "pseudopotentials.cpp"
 
 /**
  * Main DFT context structure
@@ -57,6 +83,7 @@ struct DFTContext {
     // Pseudopotentials
     UPF* pseudopot;                 // Pseudopotential data
     bool use_pseudopot;             // Flag to enable/disable pseudopotentials
+    double** Vnl_matrix;            // PRE-COMPUTED pseudopotential matrix (density independent!)
     
     // Wave functions
     std::vector<std::vector<std::complex<double>>> psi;  // Wave functions psi[band][G]
@@ -118,7 +145,13 @@ void generate_gvectors(DFTContext* ctx) {
     }
     
     ctx->npw = ctx->gvectors.size();
-    std::cout << "Number of plane waves: " << ctx->npw << "\n\n";
+    std::cout << "Number of plane waves: " << ctx->npw << "\n";
+    
+#ifdef USE_GPU_EIGEN
+    std::cout << "Using GPU eigensolve (CUDA/cuSOLVER)\n\n";
+#else
+    std::cout << "Using CPU eigensolve (LAPACK)\n\n";
+#endif
 }
 
 /**
@@ -162,6 +195,29 @@ void setup_fft_grid(DFTContext* ctx) {
 }
 
 /**
+ * Pre-compute pseudopotential matrix (ONCE before SCF loop)
+ * This is DENSITY INDEPENDENT and only needs to be computed once!
+ */
+void setup_pseudopotential(DFTContext* ctx) {
+    if (ctx->use_pseudopot && ctx->pseudopot != nullptr) {
+        std::cout << "========================================\n";
+        std::cout << "Pre-computing Pseudopotential Matrix\n";
+        std::cout << "========================================\n";
+        std::cout << "Note: This is computed ONCE (density-independent)\n";
+        std::cout << "      and reused in all SCF iterations.\n\n";
+        
+        ctx->Vnl_matrix = precompute_pseudopotential_matrix(*ctx->pseudopot, ctx->gvectors, ctx->npw);
+    } else {
+        ctx->Vnl_matrix = nullptr;
+        if (ctx->use_pseudopot && ctx->pseudopot == nullptr) {
+            std::cout << "⚠ Warning: Pseudopotential enabled but not loaded.\n";
+            std::cout << "  Continuing without pseudopotentials.\n\n";
+            ctx->use_pseudopot = false;
+        }
+    }
+}
+
+/**
  * Initialize density
  */
 void init_density(DFTContext* ctx) {
@@ -171,7 +227,7 @@ void init_density(DFTContext* ctx) {
         ctx->rho_r[i] = rho0;
     }
     
-    std::cout << "Initial uniform density: " << rho0 << " electrons/Bohr³\n\n";
+    std::cout << "Initial uniform density: " << std::scientific << std::setprecision(6) << rho0 << " electrons/Bohr³\n\n";
 }
 
 /**
@@ -298,23 +354,18 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
     std::cout << "    Hartree contribution: " << std::fixed << std::setprecision(6) << time_hartree << " s\n";
     
     // Pseudopotential
-    if (ctx->use_pseudopot && ctx->pseudopot != nullptr) {
+    if (ctx->use_pseudopot && ctx->Vnl_matrix != nullptr) {
         auto t_pseudo_start = std::chrono::high_resolution_clock::now();
-        std::cout << "  Adding pseudopotential contributions...\n";
         
         for (int i = 0; i < npw; i++) {
-            double Gi = std::sqrt(ctx->gvectors[i].g2);
-            
             for (int j = 0; j < npw; j++) {
-                double Gj = std::sqrt(ctx->gvectors[j].g2);
-                double vnl = Vnl_GGp(*ctx->pseudopot, Gi, Gj);
-                H[i][j] += vnl;
+                H[i][j] += ctx->Vnl_matrix[i][j];
             }
         }
         
         auto t_pseudo_end = std::chrono::high_resolution_clock::now();
         double time_pseudo = std::chrono::duration<double>(t_pseudo_end - t_pseudo_start).count();
-        std::cout << "    Pseudopotential contribution: " << std::fixed << std::setprecision(6) << time_pseudo << " s\n";
+        std::cout << "    Pseudopotential contribution (pre-computed): " << std::fixed << std::setprecision(6) << time_pseudo << " s\n";
     }
 }
 
@@ -398,12 +449,11 @@ double compute_total_energy(DFTContext* ctx) {
 }
 
 /**
- * Main SCF loop - Using GPU eigenvalue solver
+ * Main SCF loop
  */
 void run_scf(DFTContext* ctx) {
     std::cout << "\n========================================\n";
     std::cout << "Starting Self-Consistent Field Loop\n";
-    std::cout << "Using GPU-Accelerated Eigenvalue Solver\n";
     std::cout << "========================================\n\n";
     
     double e_old = 0.0;
@@ -443,12 +493,12 @@ void run_scf(DFTContext* ctx) {
         double time_build = std::chrono::duration<double>(t_build_end - t_build_start).count();
         std::cout << "    Total Hamiltonian build time: " << std::fixed << std::setprecision(6) << time_build << " s\n";
         
-        std::cout << "  Diagonalizing (" << ctx->npw << "x" << ctx->npw << ") on GPU...\n";
+        std::cout << "  Diagonalizing (" << ctx->npw << "x" << ctx->npw << ")...\n";
         auto t_diag_start = std::chrono::high_resolution_clock::now();
-        EigenResult* eig = compute_eigenvalues_gpu(H, ctx->npw);  // GPU version!
+        EigenResult* eig = compute_eigenvalues(H, ctx->npw);
         auto t_diag_end = std::chrono::high_resolution_clock::now();
         double time_diag = std::chrono::duration<double>(t_diag_end - t_diag_start).count();
-        std::cout << "    Diagonalization time (GPU): " << std::fixed << std::setprecision(6) << time_diag << " s\n";
+        std::cout << "    Diagonalization time: " << std::fixed << std::setprecision(6) << time_diag << " s\n";
         
         ctx->eigenvalues.resize(ctx->nbnd);
         ctx->psi.resize(ctx->nbnd);
@@ -526,6 +576,11 @@ void cleanup_dft_context(DFTContext* ctx) {
     fftw_free(ctx->vxc_g);
     fftw_free(ctx->vhart_g);
     fftw_cleanup();
+    
+    if (ctx->Vnl_matrix != nullptr) {
+        free_pseudopotential_matrix(ctx->Vnl_matrix, ctx->npw);
+        ctx->Vnl_matrix = nullptr;
+    }
 }
 
-#endif // LOBOTOMITES_MAIN_GPU_H
+#endif // LOBOTOMITES_MAIN_H
