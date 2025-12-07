@@ -59,6 +59,7 @@ struct DFTContext {
     std::vector<double> Ck_real;    // Wave function coefficients (real part)
     std::vector<double> Ck_imag;    // Wave function coefficients (imag part)
     fftw_complex* vhart_g;          // Hartree potential in G-space
+    fftw_complex* vhart_r;
     
     // Pseudopotentials
     UPF* pseudopot;                 // Pseudopotential data
@@ -75,6 +76,7 @@ struct DFTContext {
     double mixing_beta;             // Density mixing parameter
     double conv_thr;                // Energy convergence threshold
     int max_iter;                   // Maximum SCF iterations
+    int iteration;
 };
 
 /**
@@ -155,6 +157,7 @@ void setup_fft_grid(DFTContext* ctx) {
     ctx->vxc_r = fftw_alloc_real(ctx->nrxx);
     ctx->vxc_g = fftw_alloc_complex(ctx->nrxx);
     ctx->vhart_g = fftw_alloc_complex(ctx->nrxx);
+    ctx->vhart_r = fftw_alloc_complex(ctx->nrxx);
     
     ctx->Ck_real.resize(ctx->nrxx, 0.0);
     ctx->Ck_imag.resize(ctx->nrxx, 0.0);
@@ -234,37 +237,88 @@ void vxc_r2g(DFTContext* ctx) {
  * Compute Hartree potential
  */
 void compute_vhartree(DFTContext* ctx) {
-    using namespace numint;
+    std::cout << "    Computing Hartree via Poisson equation...\n";
     
-    for (int i = 0; i < ctx->nrxx; i++) {
-        ctx->rho_r[i] = std::sqrt(std::fmax(ctx->rho_r[i], 0.0));
-    }
-    
+    // 1. Transform density to reciprocal space
+    //    Input: ctx->rho_r (density in real space)
+    //    Output: ctx->rho_g (density in reciprocal space)
     fftw_execute(ctx->plan_fwd);
     
-    for (int i = 0; i < ctx->nrxx; i++) {
-        ctx->Ck_real[i] = ctx->rho_g[i][0];
-        ctx->Ck_imag[i] = ctx->rho_g[i][1];
+    // 2. Solve Poisson equation in reciprocal space
+    //    V_H(G) = 4π/G² × n(G)
+    const double four_pi = 4.0 * PI;
+    double a = ctx->a1[0];  // lattice constant
+    
+    // Allocate if needed
+    if (ctx->vhart_g == nullptr) {
+        ctx->vhart_g = fftw_alloc_complex(ctx->nrxx);
+    }
+    if (ctx->vhart_r == nullptr) {
+        ctx->vhart_r = fftw_alloc_complex(ctx->nrxx);
     }
     
-    double Lx = ctx->a1[0];
-    double Ly = ctx->a2[1];
-    double Lz = ctx->a3[2];
+    for (int ix = 0; ix < ctx->nr1; ix++) {
+        for (int iy = 0; iy < ctx->nr2; iy++) {
+            for (int iz = 0; iz < ctx->nr3; iz++) {
+                // Get Miller indices (handle FFT wrapping)
+                int h = (ix <= ctx->nr1/2) ? ix : ix - ctx->nr1;
+                int k = (iy <= ctx->nr2/2) ? iy : iy - ctx->nr2;
+                int l = (iz <= ctx->nr3/2) ? iz : iz - ctx->nr3;
+                
+                // Linear index for FFT array
+                int idx = ix * (ctx->nr2 * ctx->nr3) + iy * ctx->nr3 + iz;
+                
+                // Compute |G|² in (2π/a)² units
+                double Gx = (2.0 * PI / a) * h;
+                double Gy = (2.0 * PI / a) * k;
+                double Gz = (2.0 * PI / a) * l;
+                double G2 = Gx*Gx + Gy*Gy + Gz*Gz;
+                
+                if (G2 < 1e-12) {
+                    // G=0 component: set to zero (arbitrary constant)
+                    ctx->vhart_g[idx][0] = 0.0;
+                    ctx->vhart_g[idx][1] = 0.0;
+                } else {
+                    // V_H(G) = 4π/G² × n(G)
+                    double factor = four_pi / G2;
+                    
+                    // Normalize by FFT grid size (fftw forward FFT doesn't normalize)
+                    double n_re = ctx->rho_g[idx][0] / ctx->nrxx;
+                    double n_im = ctx->rho_g[idx][1] / ctx->nrxx;
+                    
+                    ctx->vhart_g[idx][0] = factor * n_re;
+                    ctx->vhart_g[idx][1] = factor * n_im;
+                }
+            }
+        }
+    }
     
-    TimedResult vh_center = Vh_PlaneWave_3D_p(
-        ctx->Ck_real, ctx->Ck_imag,
-        Lx, Ly, Lz,
+    // 3. Transform back to real space for energy calculations
+    //    Use a separate plan to avoid destroying vhart_g
+    fftw_plan plan_vh_to_r = fftw_plan_dft_c2r_3d(
         ctx->nr1, ctx->nr2, ctx->nr3,
-        ctx->nr1/2, ctx->nr2/2, ctx->nr3/2
+        ctx->vhart_g, (double*)ctx->vhart_r,
+        FFTW_ESTIMATE
     );
     
+    fftw_execute(plan_vh_to_r);
+    fftw_destroy_plan(plan_vh_to_r);
     
-    if (ctx->vhart_g != nullptr) {
-        fftw_free(ctx->vhart_g);
+    // Normalize (fftw backward FFT includes factor of N)
+    for (int i = 0; i < ctx->nrxx; i++) {
+        ctx->vhart_r[i][0] /= ctx->nrxx;
+        ctx->vhart_r[i][1] /= ctx->nrxx;
     }
-    ctx->vhart_g = (fftw_complex*)vh_center.VH_g;
     
-    vh_center.VH_g = nullptr;
+    // Diagnostic: check Hartree energy
+    double e_hartree_check = 0.0;
+    double dv = ctx->cell_volume / ctx->nrxx;
+    for (int i = 0; i < ctx->nrxx; i++) {
+        e_hartree_check += 0.5 * ctx->rho_r[i] * ctx->vhart_r[i][0] * dv;
+    }
+    std::cout << "      Hartree energy (diagnostic): " 
+              << std::fixed << std::setprecision(6) 
+              << e_hartree_check << " Ry\n";
 }
 
 /**
@@ -281,18 +335,16 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
         }
     }
 
-    std::cout << "I died before Kinetic Energy!\n";
     
     // Kinetic energy
     for (int i = 0; i < npw; i++) {
-        H[i][i] = ctx->gvectors[i].ekin;
+            H[i][i] = ctx->gvectors[i].ekin;
     }
     
     auto t_kin = std::chrono::high_resolution_clock::now();
     double time_kin = std::chrono::duration<double>(t_kin - t_start).count();
     std::cout << "    Kinetic energy: " << std::fixed << std::setprecision(6) << time_kin << " s\n";
     
-    std::cout << "I died before VXC!\n";
     // Vxc potential
     auto t_vxc_start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < npw; i++) {
@@ -313,7 +365,6 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
     double time_vxc = std::chrono::duration<double>(t_vxc_end - t_vxc_start).count();
     std::cout << "    Vxc contribution: " << std::fixed << std::setprecision(6) << time_vxc << " s\n";
     
-    std::cout << "I died before Hartree Potential!\n";
     // Hartree potential
     auto t_hartree_start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < npw; i++) {
@@ -321,29 +372,23 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
         int k = ctx->gvectors[i].k;
         int l = ctx->gvectors[i].l;
 
-        std::cout << "gvectors didn't kill me!!\n";
 
         int ih = (h >= 0) ? h : h + ctx->nr1;
         int ik = (k >= 0) ? k : k + ctx->nr2;
         int il = (l >= 0) ? l : l + ctx->nr3;
 
-        std::cout << "This h-bullshit didn't either!\n";
 
         
         
         if (ih >= 0 && ih < ctx->nr1 && ik >= 0 && ik < ctx->nr2 && il >= 0 && il < ctx->nr3) {
             int idx = ih * (ctx->nr2 * ctx->nr3) + ik * ctx->nr3 + il;
-            std::cout << "idx = " << idx << " \n";
-            if (idx < 700)
             H[i][i] += ctx->vhart_g[idx][0];
         }
-        std::cout << "I died on loop" << i << " !\n";
     }
     auto t_hartree_end = std::chrono::high_resolution_clock::now();
     double time_hartree = std::chrono::duration<double>(t_hartree_end - t_hartree_start).count();
     std::cout << "    Hartree contribution: " << std::fixed << std::setprecision(6) << time_hartree << " s\n";
     
-    std::cout << "I died before Pseudopotential!\n";
     // Pseudopotential
     if (ctx->use_pseudopot && ctx->Vnl_matrix != nullptr) {
         auto t_pseudo_start = std::chrono::high_resolution_clock::now();
@@ -416,36 +461,76 @@ void mix_density(DFTContext* ctx, double* rho_in, double* rho_new) {
  * Compute total energy
  */
 double compute_total_energy(DFTContext* ctx) {
-    double e_kin = 0.0;
-    double e_xc = 0.0;
-    double e_hartree = 0.0;
-    
-    int nocc = ctx->nelec / 2;
-    for (int i = 0; i < nocc; i++) {
-        e_kin += 2.0 * ctx->eigenvalues[i];
-    }
-    
     double dv = ctx->cell_volume / ctx->nrxx;
-    for (int i = 0; i < ctx->nrxx; i++) {
-        double n = ctx->rho_r[i];
-        double vxc = ctx->vxc_r[i];
-        e_xc += n * vxc * dv;
+    int nocc = ctx->nelec / 2;
+    
+    // 1. KINETIC ENERGY - computed directly from wavefunctions
+    double e_kin = 0.0;
+    for (int ibnd = 0; ibnd < nocc; ibnd++) {
+        for (int ig = 0; ig < ctx->npw; ig++) {
+            double coeff_norm_sq = std::norm(ctx->psi[ibnd][ig]);
+            e_kin += 2.0 * coeff_norm_sq * ctx->gvectors[ig].ekin;  // 2 for spin
+        }
     }
     
-    for (int i = 0; i < ctx->nrxx; i++) {
-        e_hartree += 0.5 * ctx->rho_r[i] * ctx->vhart_g[0][0] * dv;
+    // 2. Sum of eigenvalues (for reference)
+    double e_band = 0.0;
+    for (int i = 0; i < nocc; i++) {
+        e_band += 2.0 * ctx->eigenvalues[i];
     }
     
-    std::cout << "Energy Kin: " << std::fixed << std::setprecision(8) 
-                      << e_kin << " Ry\n\n";
-    std::cout << "Energy Xc: " << std::fixed << std::setprecision(8) 
-                      << e_xc << " Ry\n\n";
-    std::cout << "Energy Hartree: " << std::fixed << std::setprecision(8) 
-                      << e_hartree << " Ry\n\n";
-
-    return e_kin + e_xc + e_hartree;
+    // 3. Hartree energy: E_H = (1/2) ∫ n(r) V_H(r) dr
+    double e_hartree = 0.0;
+    for (int i = 0; i < ctx->nrxx; i++) {
+        e_hartree += 0.5 * ctx->rho_r[i] * ctx->vhart_r[i][0] * dv;
+    }
+    
+    // 4. XC potential energy: ∫ n(r) V_xc(r) dr
+    double e_vxc = 0.0;
+    for (int i = 0; i < ctx->nrxx; i++) {
+        e_vxc += ctx->rho_r[i] * ctx->vxc_r[i] * dv;
+    }
+    
+    // 5. XC energy functional (LDA)
+    double e_xc_functional = 0.0;
+    for (int i = 0; i < ctx->nrxx; i++) {
+        double n = std::fmax(ctx->rho_r[i], 1e-12);
+        
+        // LDA exchange energy per electron
+        double ex = -0.458165 * std::pow(n, 1.0/3.0);  // Rydberg
+        
+        // LDA correlation energy per electron (Perdew-Wang)
+        double rs = std::pow(3.0 / (4.0 * PI * n), 1.0/3.0);
+        double ec;
+        if (rs < 1.0) {
+            ec = -0.1423 / (1.0 + 1.0529 * std::sqrt(rs) + 0.3334 * rs);
+        } else {
+            ec = -0.0960 / (1.0 + 1.0529 * std::sqrt(rs) + 0.3334 * rs);
+        }
+        
+        e_xc_functional += n * (ex + ec) * dv;
+    }
+    
+    // Total energy with DFT double-counting correction
+    // E_total = E_band - E_Hartree - ∫n·V_xc + E_xc[n]
+    double e_total = e_band - e_hartree - e_vxc + e_xc_functional;
+    
+    std::cout << "  Energy Breakdown:\n";
+    std::cout << "  ─────────────────────────────────────────\n";
+    std::cout << "  Kinetic:          " << std::fixed << std::setprecision(8) 
+              << e_kin << " Ry\n";
+    std::cout << "  Hartree:          " << std::fixed << std::setprecision(8) 
+              << e_hartree << " Ry\n";
+    std::cout << "  XC (V_xc×n):      " << std::fixed << std::setprecision(8) 
+              << e_vxc << " Ry\n";
+    std::cout << "  XC functional:    " << std::fixed << std::setprecision(8) 
+              << e_xc_functional << " Ry\n";
+    std::cout << "  Band energy:      " << std::fixed << std::setprecision(8) 
+              << e_band << " Ry\n";
+    std::cout << "  ─────────────────────────────────────────\n";
+    
+    return e_total;
 }
-
 /**
  * Main SCF loop
  */
@@ -506,7 +591,20 @@ void run_scf(DFTContext* ctx) {
             for (int j = 0; j < ctx->npw; j++) {
                 ctx->psi[i][j] = std::complex<double>(eig->vectors[i][j], 0.0);
             }
+            double norm = 0.0;
+            for (int j = 0; j < ctx->npw; j++) {
+                norm += std::norm(ctx->psi[i][j]);
+            }
+            norm = std::sqrt(norm);
+    
+            if (norm > 1e-10) {
+                for (int j = 0; j < ctx->npw; j++) {
+                    ctx->psi[i][j] /= norm;
+                }
+            }
         }
+
+        
         
         std::cout << "  Lowest eigenvalues (Ry): ";
         for (int i = 0; i < std::min(5, ctx->nbnd); i++) {
@@ -557,6 +655,7 @@ void run_scf(DFTContext* ctx) {
         if (iter == ctx->max_iter) {
             std::cout << "✗ SCF NOT CONVERGED after " << ctx->max_iter << " iterations\n\n";
         }
+        ctx->iteration += 1;
     }
     
     delete[] rho_in;

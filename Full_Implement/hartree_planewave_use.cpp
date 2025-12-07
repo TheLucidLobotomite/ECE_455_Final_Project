@@ -17,6 +17,7 @@ namespace numint
     {
         double value;  // e.g. Hartree potential at one grid point
         double time_s; // runtime in seconds
+        fftw_complex* VH_real;
         fftw_complex* VH_g;
     };
     // creates Flattened linear index for grid
@@ -153,13 +154,14 @@ namespace numint
                         VH_k[n][0] = factor * re;
                         VH_k[n][1] = factor * im;
 
-                        // find nuclear interaction poteintal and smooth result
+                        /* // find nuclear interaction poteintal and smooth result
                         double Z = 26.0;     // Iron nuclear charge
                         double sigma = 0.10; // smoothing width (bohr)
                         double smooth = exp(-0.25 * G2 * sigma * sigma);
 
                         // Add smoothed Coulomb nuclear term  -4πZ/G² e^{-(σG)²/4}
                         VH_k[n][0] += -4.0 * PI * Z * smooth / G2;
+                        */
                     }
                 }
             }
@@ -177,6 +179,8 @@ namespace numint
             VH_r[n][1] /= Ntot;
         }
 
+        results.VH_real = VH_r;
+
         //  get value at requested grid point
         int n_eval = idx3D(ix_eval, iy_eval, iz_eval, Ny, Nz);
         double VH_at_r = VH_r[n_eval][0]; // real
@@ -193,8 +197,7 @@ namespace numint
         fftw_free(psi_r);
         fftw_free(n_r);
         fftw_free(n_k);
-        fftw_free(VH_k);
-        fftw_free(VH_r);
+        
 
         results.value = (2 * VH_at_r);
         results.time_s = elapsed.count();
@@ -329,13 +332,14 @@ namespace numint
                         VH_k[n][0] = factor * re;
                         VH_k[n][1] = factor * im;
 
-                        // find nuclear interaction poteintal and smooth result
+                        /* // find nuclear interaction poteintal and smooth result
                         double Z = 26.0;     // Iron nuclear charge
                         double sigma = 0.10; // smoothing width (bohr)
                         double smooth = exp(-0.25 * G2 * sigma * sigma);
 
                         // Add smoothed Coulomb nuclear term  -4πZ/G² e^{-(σG)²/4}
                         VH_k[n][0] += -4.0 * PI * Z * smooth / G2;
+                        */
                     }
                 }
             }
@@ -353,6 +357,8 @@ namespace numint
             VH_r[n][1] /= Ntot;
         }
 
+        results.VH_real = VH_r;
+
         //  get value at requested grid point
         int n_eval = idx3D(ix_eval, iy_eval, iz_eval, Ny, Nz);
         double VH_at_r = VH_r[n_eval][0]; // real part
@@ -369,8 +375,6 @@ namespace numint
         fftw_free(psi_r);
         fftw_free(n_r);
         fftw_free(n_k);
-        fftw_free(VH_k);
-        fftw_free(VH_r);
 
         results.value = (2 * VH_at_r);
         results.time_s = elapsed.count();

@@ -35,6 +35,7 @@ int main() {
     ctx.mixing_beta = 0.5;        // Density mixing (0.1-0.5 typical)
     ctx.conv_thr = 1.0e-6;        // Convergence threshold (Ry)
     ctx.max_iter = 50;            // Maximum SCF iterations
+    ctx.iteration = 0;
     
     // Pseudopotential (optional)
     ctx.use_pseudopot = false;
