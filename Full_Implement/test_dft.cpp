@@ -1,11 +1,11 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-#include "lobotomites_main_cpu.cpp"
-//#include "lobotomites_main_gpu.cpp"
+//#include "lobotomites_main_cpu.cpp"
+#include "lobotomites_main_gpu.cpp"
 
 /**
- * DFT Test Driver Program - WITH FIXED PSEUDOPOTENTIALS
+ * DFT Test Driver Program - WITH PSEUDOPOTENTIALS AND EWALD
  * Configure and run different DFT calculations here
  */
 
@@ -25,6 +25,11 @@ int main() {
     ctx.a1[0] = alat; ctx.a1[1] = 0.0;   ctx.a1[2] = 0.0;
     ctx.a2[0] = 0.0;   ctx.a2[1] = alat; ctx.a2[2] = 0.0;
     ctx.a3[0] = 0.0;   ctx.a3[1] = 0.0;   ctx.a3[2] = alat;
+    
+    // Ion positions and charges (for Ewald summation)
+    // Fe atom at the origin
+    ctx.ion_positions = {{0.0, 0.0, 0.0}};  // Position in Bohr
+    ctx.ion_charges = {26.0};                // Fe has 26 protons (nuclear charge)
     
     // DFT Parameters
     ctx.ecut_ry = 50.0;           // Energy cutoff (Rydberg)
@@ -80,6 +85,7 @@ int main() {
     std::cout << "Energy cutoff: " << ctx.ecut_ry << " Ry\n";
     std::cout << "Electrons: " << ctx.nelec << "\n";
     std::cout << "Bands: " << ctx.nbnd << "\n";
+    std::cout << "Ions: " << ctx.ion_positions.size() << " (total charge: " << ctx.ion_charges[0] << ")\n";
     std::cout << "Mixing beta: " << ctx.mixing_beta << "\n";
     std::cout << "Convergence threshold: " << std::scientific << ctx.conv_thr << " Ry\n";
     std::cout << "Max iterations: " << ctx.max_iter << "\n";
@@ -96,6 +102,10 @@ int main() {
     // PRE-COMPUTE PSEUDOPOTENTIAL MATRIX (density-independent!)
     // This happens ONCE before SCF loop
     setup_pseudopotential(&ctx);
+    
+    // PRE-COMPUTE EWALD ENERGY (density-independent!)
+    // This happens ONCE before SCF loop
+    setup_ewald_energy(&ctx);
     
     init_density(&ctx);
     
@@ -121,29 +131,3 @@ int main() {
     
     return 0;
 }
-
-/*
- * ============================================
- * KEY FIXES IN THIS VERSION:
- * ============================================
- * 
- * 1. UNITS FIX: Pseudopotential now in Rydberg (was Hartree)
- *    - Vnl_GGp now multiplies by 2 to convert Hartree → Rydberg
- * 
- * 2. DENSITY INDEPENDENCE: Pseudopotential pre-computed ONCE
- *    - Computed before SCF loop (not every iteration!)
- *    - 3 minutes → 0.001 seconds per iteration
- * 
- * 3. PERFORMANCE: SCF iterations now ~100x faster with pseudopotentials
- * 
- * ============================================
- * TO COMPILE AND RUN:
- * ============================================
- * 
- * $env:PATH = "C:\msys64\ucrt64\bin;C:\msys64\ucrt64\lib;" + $env:PATH; 
- * g++ test_dft_fixed.cpp -o test_dft_fixed.exe -std=c++11 -O3 -march=native 
- * -fopenmp -I"C:\msys64\ucrt64\include" -L"C:\msys64\ucrt64\lib" 
- * -lfftw3 -lfftw3_threads -lopenblas; 
- * .\test_dft_fixed.exe
- * 
- */

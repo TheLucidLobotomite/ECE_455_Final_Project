@@ -61,6 +61,7 @@ extern "C" {
 // Include other components
 #include "hartree_planewave_use.cpp"
 #include "pseudopotentials.cpp"
+#include "ewald.cpp"
 
 /**
  * Main DFT context structure
@@ -98,6 +99,11 @@ struct DFTContext {
     UPF* pseudopot;                 // Pseudopotential data
     bool use_pseudopot;             // Flag to enable/disable pseudopotentials
     double** Vnl_matrix;            // PRE-COMPUTED pseudopotential matrix (density independent!)
+    
+    // Ion-ion interaction (Ewald)
+    double ewald_energy;            // PRE-COMPUTED Ewald energy (density independent!)
+    std::vector<Vec3> ion_positions; // Ion positions in Bohr
+    std::vector<double> ion_charges; // Ion charges (atomic numbers)
     
     // Wave functions
     std::vector<std::vector<std::complex<double>>> psi;  // Wave functions psi[band][G]
@@ -228,6 +234,52 @@ void setup_pseudopotential(DFTContext* ctx) {
             ctx->use_pseudopot = false;
         }
     }
+}
+
+/**
+ * Pre-compute Ewald energy (ONCE before SCF loop)
+ */
+void setup_ewald_energy(DFTContext* ctx) {
+    if (ctx->ion_positions.empty() || ctx->ion_charges.empty()) {
+        std::cout << "No ions specified, Ewald energy = 0\n\n";
+        ctx->ewald_energy = 0.0;
+        return;
+    }
+    
+    std::cout << "========================================\n";
+    std::cout << "Computing Ion-Ion Ewald Energy\n";
+    std::cout << "========================================\n";
+    std::cout << "Note: This is computed ONCE (density-independent)\n";
+    std::cout << "      and added as a constant to total energy.\n";
+    std::cout << "Number of ions: " << ctx->ion_positions.size() << "\n";
+    
+    double Lx = ctx->a1[0];
+    double Ly = ctx->a2[1];
+    double Lz = ctx->a3[2];
+    
+    // Time the Ewald energy calculation
+    auto t_ewald_start = std::chrono::high_resolution_clock::now();
+    
+    // Use the parallelized version for better performance
+    double ewald_hartree = Ve_PlaneWave_3D_P(
+        ctx->ion_positions,
+        ctx->ion_charges,
+        Lx, Ly, Lz,
+        ctx->nr1, ctx->nr2, ctx->nr3
+    );
+    
+    auto t_ewald_end = std::chrono::high_resolution_clock::now();
+    double time_ewald = std::chrono::duration<double>(t_ewald_end - t_ewald_start).count();
+    
+    // Convert from Hartree to Rydberg (1 Hartree = 2 Rydberg)
+    ctx->ewald_energy = 2.0 * ewald_hartree;
+    
+    std::cout << "Ewald energy: " << std::fixed << std::setprecision(8) 
+              << ewald_hartree << " Hartree\n";
+    std::cout << "            = " << std::fixed << std::setprecision(8) 
+              << ctx->ewald_energy << " Rydberg\n";
+    std::cout << "Ewald calculation time: " << std::fixed << std::setprecision(6) 
+              << time_ewald << " s\n\n";
 }
 
 /**
@@ -466,7 +518,8 @@ double compute_total_energy(DFTContext* ctx) {
         e_hartree += 0.5 * ctx->rho_r[i] * ctx->vhart_g[0][0] * dv;
     }
     
-    return e_kin + e_xc + e_hartree;
+    // Add the constant ion-ion Ewald energy
+    return e_kin + e_xc + e_hartree + ctx->ewald_energy;
 }
 
 /**
