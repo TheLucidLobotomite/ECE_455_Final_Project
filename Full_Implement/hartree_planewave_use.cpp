@@ -17,6 +17,7 @@ namespace numint
     {
         double value;  // e.g. Hartree potential at one grid point
         double time_s; // runtime in seconds
+        fftw_complex* VH_g;
     };
     // creates Flattened linear index for grid
     inline int idx3D(int ix, int iy, int iz, int Ny, int Nz)
@@ -40,6 +41,8 @@ namespace numint
     */
     TimedResult Vh_PlaneWave_3D_s(const std::vector<double> &Ck_real, const std::vector<double> &Ck_imag, double Lx, double Ly, double Lz, int Nx, int Ny, int Nz, int ix_eval, int iy_eval, int iz_eval)
     {
+        TimedResult results;
+
         using namespace std::chrono;
         auto t0 = high_resolution_clock::now(); // begin timing clock
 
@@ -162,6 +165,8 @@ namespace numint
             }
         }
 
+        results.VH_g = VH_k;
+
         //  inverse FFT  V_H(G) to V_H(r)
         fftw_execute(plan_k_to_r_VH);
 
@@ -191,7 +196,10 @@ namespace numint
         fftw_free(VH_k);
         fftw_free(VH_r);
 
-        return {2 * VH_at_r, elapsed.count()};
+        results.value = (2 * VH_at_r);
+        results.time_s = elapsed.count();
+
+        return results;
     }
     /*
    parallel calculation of hartree potienail
@@ -206,6 +214,7 @@ namespace numint
    */
     TimedResult Vh_PlaneWave_3D_p(const std::vector<double> &Ck_real, const std::vector<double> &Ck_imag, double Lx, double Ly, double Lz, int Nx, int Ny, int Nz, int ix_eval, int iy_eval, int iz_eval)
     {
+        TimedResult results;
         using namespace std::chrono;
         auto t0 = high_resolution_clock::now(); // begin timing clock
 
@@ -331,6 +340,8 @@ namespace numint
                 }
             }
         }
+        results.VH_g = VH_k;
+
         //  inverse FFT  V_H(G) to V_H(r)
         fftw_execute(plan_k_to_r_VH);
 
@@ -361,7 +372,10 @@ namespace numint
         fftw_free(VH_k);
         fftw_free(VH_r);
 
-        return {2 * VH_at_r, elapsed.count()};
+        results.value = (2 * VH_at_r);
+        results.time_s = elapsed.count();
+
+        return results;
     }
 
 }

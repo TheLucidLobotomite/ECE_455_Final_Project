@@ -12,7 +12,7 @@ sudo apt install -y cuda-toolkit-12-6
 sudo apt install -y libfftw3-dev libopenblas-dev
 
 // Just do this everytime
-cd /mnt/c/Users/spayt/ECE_455_Final_Project
+cd /mnt/c/Users/Charlie/Documents/ECE455/ECE_455_Final_Project
 export PATH=/usr/local/cuda/bin:$PATH
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 

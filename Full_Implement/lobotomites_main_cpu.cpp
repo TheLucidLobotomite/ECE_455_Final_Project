@@ -99,7 +99,7 @@ void generate_gvectors(DFTContext* ctx) {
     double a = ctx->a1[0];
     double gfactor = 2.0 * PI / a;
     
-    int hmax = (int)std::ceil(std::sqrt(2.0 * ctx->ecut_ry) * a / (2.0 * PI)) + 1;
+    int hmax = (int)std::ceil( 2.0 * std::sqrt(ctx->ecut_ry) * a / (2.0 * PI)) + 1;
     
     std::cout << "Generating G-vectors with cutoff " << ctx->ecut_ry << " Ry\n";
     std::cout << "Searching Miller indices up to ±" << hmax << "\n";
@@ -258,10 +258,13 @@ void compute_vhartree(DFTContext* ctx) {
         ctx->nr1/2, ctx->nr2/2, ctx->nr3/2
     );
     
-    for (int i = 0; i < ctx->nrxx; i++) {
-        ctx->vhart_g[i][0] = vh_center.value / ctx->nrxx;
-        ctx->vhart_g[i][1] = 0.0;
+    
+    if (ctx->vhart_g != nullptr) {
+        fftw_free(ctx->vhart_g);
     }
+    ctx->vhart_g = (fftw_complex*)vh_center.VH_g;
+    
+    vh_center.VH_g = nullptr;
 }
 
 /**
@@ -277,6 +280,8 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
             H[i][j] = 0.0;
         }
     }
+
+    std::cout << "I died before Kinetic Energy!\n";
     
     // Kinetic energy
     for (int i = 0; i < npw; i++) {
@@ -287,6 +292,7 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
     double time_kin = std::chrono::duration<double>(t_kin - t_start).count();
     std::cout << "    Kinetic energy: " << std::fixed << std::setprecision(6) << time_kin << " s\n";
     
+    std::cout << "I died before VXC!\n";
     // Vxc potential
     auto t_vxc_start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < npw; i++) {
@@ -307,26 +313,37 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
     double time_vxc = std::chrono::duration<double>(t_vxc_end - t_vxc_start).count();
     std::cout << "    Vxc contribution: " << std::fixed << std::setprecision(6) << time_vxc << " s\n";
     
+    std::cout << "I died before Hartree Potential!\n";
     // Hartree potential
     auto t_hartree_start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < npw; i++) {
         int h = ctx->gvectors[i].h;
         int k = ctx->gvectors[i].k;
         int l = ctx->gvectors[i].l;
-        
+
+        std::cout << "gvectors didn't kill me!!\n";
+
         int ih = (h >= 0) ? h : h + ctx->nr1;
         int ik = (k >= 0) ? k : k + ctx->nr2;
         int il = (l >= 0) ? l : l + ctx->nr3;
+
+        std::cout << "This h-bullshit didn't either!\n";
+
+        
         
         if (ih >= 0 && ih < ctx->nr1 && ik >= 0 && ik < ctx->nr2 && il >= 0 && il < ctx->nr3) {
             int idx = ih * (ctx->nr2 * ctx->nr3) + ik * ctx->nr3 + il;
+            std::cout << "idx = " << idx << " \n";
+            if (idx < 700)
             H[i][i] += ctx->vhart_g[idx][0];
         }
+        std::cout << "I died on loop" << i << " !\n";
     }
     auto t_hartree_end = std::chrono::high_resolution_clock::now();
     double time_hartree = std::chrono::duration<double>(t_hartree_end - t_hartree_start).count();
     std::cout << "    Hartree contribution: " << std::fixed << std::setprecision(6) << time_hartree << " s\n";
     
+    std::cout << "I died before Pseudopotential!\n";
     // Pseudopotential
     if (ctx->use_pseudopot && ctx->Vnl_matrix != nullptr) {
         auto t_pseudo_start = std::chrono::high_resolution_clock::now();
@@ -386,11 +403,11 @@ void compute_density_from_wfn(DFTContext* ctx) {
 }
 
 /**
- * Mix densities
+ * Mix densities rho_new = rho_in * beta + (1 - beta)rho_r
  */
 void mix_density(DFTContext* ctx, double* rho_in, double* rho_new) {
     for (int i = 0; i < ctx->nrxx; i++) {
-        rho_new[i] = rho_in[i] + ctx->mixing_beta * (ctx->rho_r[i] - rho_in[i]);
+        rho_new[i] = (ctx->mixing_beta * rho_in[i]) + (1 - ctx->mixing_beta) * (ctx->rho_r[i]);
         rho_in[i] = rho_new[i];
     }
 }
@@ -419,6 +436,13 @@ double compute_total_energy(DFTContext* ctx) {
         e_hartree += 0.5 * ctx->rho_r[i] * ctx->vhart_g[0][0] * dv;
     }
     
+    std::cout << "Energy Kin: " << std::fixed << std::setprecision(8) 
+                      << e_kin << " Ry\n\n";
+    std::cout << "Energy Xc: " << std::fixed << std::setprecision(8) 
+                      << e_xc << " Ry\n\n";
+    std::cout << "Energy Hartree: " << std::fixed << std::setprecision(8) 
+                      << e_hartree << " Ry\n\n";
+
     return e_kin + e_xc + e_hartree;
 }
 
@@ -497,12 +521,6 @@ void run_scf(DFTContext* ctx) {
         double time_density = std::chrono::duration<double>(t_density_end - t_density_start).count();
         std::cout << "    Density computation time: " << std::fixed << std::setprecision(6) << time_density << " s\n";
         
-        auto t_mix_start = std::chrono::high_resolution_clock::now();
-        mix_density(ctx, rho_in, ctx->rho_r);
-        auto t_mix_end = std::chrono::high_resolution_clock::now();
-        double time_mix = std::chrono::duration<double>(t_mix_end - t_mix_start).count();
-        std::cout << "    Density mixing time: " << std::fixed << std::setprecision(6) << time_mix << " s\n";
-        
         double e_total = compute_total_energy(ctx);
         double de = std::abs(e_total - e_old);
         
@@ -510,6 +528,12 @@ void run_scf(DFTContext* ctx) {
                   << e_total << " Ry\n";
         std::cout << "  |ΔE|:         " << std::scientific << std::setprecision(3) 
                   << de << " Ry\n";
+
+        auto t_mix_start = std::chrono::high_resolution_clock::now();
+        mix_density(ctx, rho_in, ctx->rho_r);
+        auto t_mix_end = std::chrono::high_resolution_clock::now();
+        double time_mix = std::chrono::duration<double>(t_mix_end - t_mix_start).count();
+        std::cout << "    Density mixing time: " << std::fixed << std::setprecision(6) << time_mix << " s\n";
         
         if (iter > 1 && de < ctx->conv_thr) {
             std::cout << "\n✓ SCF CONVERGED in " << iter << " iterations!\n";

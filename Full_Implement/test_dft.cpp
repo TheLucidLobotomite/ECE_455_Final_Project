@@ -41,12 +41,12 @@ int main() {
     ctx.pseudopot = nullptr;
     ctx.Vnl_matrix = nullptr;     // Initialize to nullptr
     
-    std::string upf_file = "NA.UPF";  // Path to your UPF file
+    std::string upf_file = "Fe.UPF";  // Path to your UPF file
     std::cout << "Checking for pseudopotential: " << upf_file << "\n";
     
     // Check if file exists first
     std::ifstream check_file(upf_file);
-    if (check_file.good()) {
+    if (check_file.good() && ctx.use_pseudopot == true) {
         check_file.close();
         try {
             UPF pp = read_upf(upf_file);
