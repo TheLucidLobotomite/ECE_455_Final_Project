@@ -89,8 +89,8 @@ double Ve_PlaneWave_3D_s(
     // inside your G loops:
     const double TWO_PI = 2.0 * M_PI;
 
-    // compute ithe reciporacal ewald energy
-    double E_rec = 0.0; // <<< CHANGED
+    //the reciporacal ewald energy
+    double E_rec = 0.0; 
 
     for (int iz = 0; iz < Nz; ++iz) // z-loop
     {
@@ -173,7 +173,7 @@ double Ve_PlaneWave_3D_s(
                         double dx = ion_pos[i].x - ion_pos[j].x + Rx;
                         double dy = ion_pos[i].y - ion_pos[j].y + Ry;
                         double dz = ion_pos[i].z - ion_pos[j].z + Rz;
-                        double r = std::sqrt(dx * dx + dy * dy + dz * dz);
+                        double r = std::sqrt(dx * dx + dy * dy + dz * dz); // calcualte radius for r based on points
 
                         if (r == 0.0)
                             continue;
