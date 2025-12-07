@@ -1,0 +1,20 @@
+# Update package list
+sudo apt update
+
+# Install build tools
+sudo apt install -y build-essential
+
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt update
+sudo apt install -y cuda-toolkit-12-6
+
+# Install other dependencies
+sudo apt install -y libfftw3-dev libopenblas-dev
+
+// Just do this everytime
+cd /mnt/c/Users/spayt/ECE_455_Final_Project
+export PATH=/usr/local/cuda/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+
+$env:PATH = "C:\msys64\ucrt64\bin;C:\msys64\ucrt64\lib;" + $env:PATH; g++ test_dft.cpp -o test_dft.exe -std=c++11 -O3 -march=native -fopenmp -I"C:\msys64\ucrt64\include" -L"C:\msys64\ucrt64\lib" -lfftw3 -lfftw3_threads -lopenblas; .\test_dft.exe

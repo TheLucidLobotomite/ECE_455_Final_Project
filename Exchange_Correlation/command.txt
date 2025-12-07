@@ -1,0 +1,1 @@
+g++ -O3 -march=native -fopenmp -std=c++11 cpu_test_Vxc.cpp -o cpu_test_Vxc ; ./cpu_test_Vxc
