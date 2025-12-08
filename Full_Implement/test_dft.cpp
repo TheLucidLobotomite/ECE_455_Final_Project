@@ -1,8 +1,8 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-//#include "lobotomites_main_cpu.cpp"
-#include "lobotomites_main_gpu.cpp"
+#include "lobotomites_main_cpu.cpp"
+//#include "lobotomites_main_gpu.cpp"
 
 /**
  * DFT Test Driver Program - WITH PSEUDOPOTENTIALS AND EWALD
@@ -19,22 +19,25 @@ int main() {
     // ============================================
     
     DFTContext ctx;
-    
-    // System: Simple cubic Fe
-    double alat = 6.767109;  // Lattice constant in Bohr
+
+    // System: BCC Iron (2 atoms per unit cell)
+    double alat = 5.42;  // BCC Fe lattice constant in Bohr (~2.87 Å)
     ctx.a1[0] = alat; ctx.a1[1] = 0.0;   ctx.a1[2] = 0.0;
     ctx.a2[0] = 0.0;   ctx.a2[1] = alat; ctx.a2[2] = 0.0;
     ctx.a3[0] = 0.0;   ctx.a3[1] = 0.0;   ctx.a3[2] = alat;
-    
+
     // Ion positions and charges (for Ewald summation)
-    // Fe atom at the origin
-    ctx.ion_positions = {{0.0, 0.0, 0.0}};  // Position in Bohr
-    ctx.ion_charges = {26.0};                // Fe has 26 protons (nuclear charge)
-    
+    // BCC structure: atoms at (0,0,0) and (a/2, a/2, a/2)
+    ctx.ion_positions = {
+        {0.0, 0.0, 0.0},           // First Fe atom
+        {alat/2.0, alat/2.0, alat/2.0}  // Second Fe atom (body center)
+    };
+    ctx.ion_charges = {26.0, 26.0};  // Fe has 26 protons (nuclear charge)
+
     // DFT Parameters
-    ctx.ecut_ry = 50.0;           // Energy cutoff (Rydberg)
-    ctx.nelec = 8;                // Number of electrons (Fe atom: 8 valence)
-    ctx.nbnd = ctx.nelec / 2 + 3; // Number of bands (occupied + some empty)
+    ctx.ecut_ry = 71.0;           // Energy cutoff (Rydberg) - reduced for faster testing
+    ctx.nelec = 16;               // Number of electrons (2 Fe atoms × 8 valence e⁻)
+    ctx.nbnd = ctx.nelec / 2 + 4; // Number of bands (occupied + some empty)
     
     // SCF Parameters
     ctx.mixing_beta = 0.5;        // Density mixing (0.1-0.5 typical)
@@ -46,7 +49,7 @@ int main() {
     ctx.pseudopot = nullptr;
     ctx.Vnl_matrix = nullptr;     // Initialize to nullptr
     
-    std::string upf_file = "NA.UPF";  // Path to your UPF file
+    std::string upf_file = "Fe.UPF";  // Path to your UPF file
     std::cout << "Checking for pseudopotential: " << upf_file << "\n";
     
     // Check if file exists first
@@ -80,12 +83,12 @@ int main() {
     
     std::cout << "Calculation Summary:\n";
     std::cout << "-------------------\n";
-    std::cout << "System: Fe atom in cubic cell\n";
-    std::cout << "Lattice constant: " << alat << " Bohr\n";
+    std::cout << "System: BCC Iron (2 atoms)\n";
+    std::cout << "Lattice constant: " << alat << " Bohr (" << alat*0.529177 << " Angstrom)\n";
     std::cout << "Energy cutoff: " << ctx.ecut_ry << " Ry\n";
     std::cout << "Electrons: " << ctx.nelec << "\n";
     std::cout << "Bands: " << ctx.nbnd << "\n";
-    std::cout << "Ions: " << ctx.ion_positions.size() << " (total charge: " << ctx.ion_charges[0] << ")\n";
+    std::cout << "Ions: " << ctx.ion_positions.size() << " Fe atoms\n";
     std::cout << "Mixing beta: " << ctx.mixing_beta << "\n";
     std::cout << "Convergence threshold: " << std::scientific << ctx.conv_thr << " Ry\n";
     std::cout << "Max iterations: " << ctx.max_iter << "\n";

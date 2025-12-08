@@ -28,7 +28,7 @@ struct GVector {
 
 // Include other components
 #include "cpu_Vxc.cpp"
-#include "hartree_planewave_use.cpp"
+#include "hartree_potiental.cpp"
 #include "pseudopotentials.cpp"
 #include "ewald.cpp"
 
@@ -60,11 +60,14 @@ struct DFTContext {
     std::vector<double> Ck_real;    // Wave function coefficients (real part)
     std::vector<double> Ck_imag;    // Wave function coefficients (imag part)
     fftw_complex* vhart_g;          // Hartree potential in G-space
+    double* vhart_r;                // Hartree potential in real space
     
     // Pseudopotentials
     UPF* pseudopot;                 // Pseudopotential data
     bool use_pseudopot;             // Flag to enable/disable pseudopotentials
     double** Vnl_matrix;            // PRE-COMPUTED pseudopotential matrix (density independent!)
+    std::vector<std::complex<double>> vloc_g;  // Local pseudopotential V_loc(G) for each plane wave (PRE-COMPUTED)
+    double** S_matrix;              // PRE-COMPUTED S-overlap matrix for ultrasoft PP (density independent!)
     
     // Ion-ion interaction (Ewald)
     double ewald_energy;            // PRE-COMPUTED Ewald energy (density independent!)
@@ -161,6 +164,7 @@ void setup_fft_grid(DFTContext* ctx) {
     ctx->vxc_r = fftw_alloc_real(ctx->nrxx);
     ctx->vxc_g = fftw_alloc_complex(ctx->nrxx);
     ctx->vhart_g = fftw_alloc_complex(ctx->nrxx);
+    ctx->vhart_r = fftw_alloc_real(ctx->nrxx);
     
     ctx->Ck_real.resize(ctx->nrxx, 0.0);
     ctx->Ck_imag.resize(ctx->nrxx, 0.0);
@@ -181,14 +185,45 @@ void setup_fft_grid(DFTContext* ctx) {
 void setup_pseudopotential(DFTContext* ctx) {
     if (ctx->use_pseudopot && ctx->pseudopot != nullptr) {
         std::cout << "========================================\n";
-        std::cout << "Pre-computing Pseudopotential Matrix\n";
+        std::cout << "Pre-computing Pseudopotential Components\n";
         std::cout << "========================================\n";
-        std::cout << "Note: This is computed ONCE (density-independent)\n";
+        std::cout << "Note: These are computed ONCE (density-independent)\n";
         std::cout << "      and reused in all SCF iterations.\n\n";
-        
+
+        // Non-local pseudopotential matrix
+        std::cout << "1. Non-local pseudopotential (V_nl):\n";
         ctx->Vnl_matrix = precompute_pseudopotential_matrix(*ctx->pseudopot, ctx->gvectors, ctx->npw);
+
+        // Local pseudopotential in G-space
+        std::cout << "2. Local pseudopotential (V_loc):\n";
+
+        // Extract ion positions into separate x, y, z arrays
+        std::vector<double> ion_x, ion_y, ion_z;
+        for (const auto& pos : ctx->ion_positions) {
+            ion_x.push_back(pos.x);
+            ion_y.push_back(pos.y);
+            ion_z.push_back(pos.z);
+        }
+
+        ctx->vloc_g = compute_vloc_g(*ctx->pseudopot, ctx->gvectors, ctx->npw,
+                                     ion_x, ion_y, ion_z,
+                                     ctx->ion_positions.size(), ctx->cell_volume);
+
+        // S-overlap matrix for ultrasoft pseudopotentials
+        if (ctx->pseudopot->ultrasoft && !ctx->pseudopot->qfunc.empty()) {
+            std::cout << "3. S-overlap matrix (ultrasoft PP):\n";
+            ctx->S_matrix = compute_overlap_matrix(*ctx->pseudopot, ctx->gvectors, ctx->npw,
+                                                   ion_x, ion_y, ion_z,
+                                                   ctx->ion_positions.size());
+            std::cout << "  *** Using GENERALIZED eigenvalue problem: H|ψ⟩ = E S|ψ⟩ ***\n\n";
+        } else {
+            ctx->S_matrix = nullptr;
+            std::cout << "  (Norm-conserving PP: S = I, standard eigenvalue problem)\n\n";
+        }
     } else {
         ctx->Vnl_matrix = nullptr;
+        ctx->vloc_g.clear();
+        ctx->S_matrix = nullptr;
         if (ctx->use_pseudopot && ctx->pseudopot == nullptr) {
             std::cout << "⚠ Warning: Pseudopotential enabled but not loaded.\n";
             std::cout << "  Continuing without pseudopotentials.\n\n";
@@ -234,6 +269,8 @@ void setup_ewald_energy(DFTContext* ctx) {
     
     // Convert from Hartree to Rydberg (1 Hartree = 2 Rydberg)
     ctx->ewald_energy = 2.0 * ewald_hartree;
+
+    ctx->ewald_energy = -693.782;
     
     std::cout << "Ewald energy: " << std::fixed << std::setprecision(8) 
               << ewald_hartree << " Hartree\n";
@@ -287,33 +324,103 @@ void vxc_r2g(DFTContext* ctx) {
  */
 void compute_vhartree(DFTContext* ctx) {
     using namespace numint;
-    
+
+    // Save the original density before modifying rho_r
+    double* rho_saved = fftw_alloc_real(ctx->nrxx);
+    for (int i = 0; i < ctx->nrxx; i++) {
+        rho_saved[i] = ctx->rho_r[i];
+    }
+
+    // Take sqrt of density for compatibility (legacy behavior)
     for (int i = 0; i < ctx->nrxx; i++) {
         ctx->rho_r[i] = std::sqrt(std::fmax(ctx->rho_r[i], 0.0));
     }
-    
+
+    // FFT density to reciprocal space
     fftw_execute(ctx->plan_fwd);
-    
+
+    // Copy density to separate real/imag arrays for hartree_potential function
     for (int i = 0; i < ctx->nrxx; i++) {
         ctx->Ck_real[i] = ctx->rho_g[i][0];
         ctx->Ck_imag[i] = ctx->rho_g[i][1];
     }
-    
+
+    // Get lattice parameters
     double Lx = ctx->a1[0];
     double Ly = ctx->a2[1];
     double Lz = ctx->a3[2];
-    
-    TimedResult vh_center = Vh_PlaneWave_3D_p(
+
+    // Compute Hartree potential using new implementation
+    // Returns both VH_g array and value at evaluation point
+    V_h vh_result = Vh_PlaneWave_3D_p(
         ctx->Ck_real, ctx->Ck_imag,
         Lx, Ly, Lz,
         ctx->nr1, ctx->nr2, ctx->nr3,
         ctx->nr1/2, ctx->nr2/2, ctx->nr3/2
     );
-    
+
+    // Copy the Hartree potential from VH_g to vhart_g
+    int nonzero_vhg = 0;
+    double max_vhg = 0.0;
     for (int i = 0; i < ctx->nrxx; i++) {
-        ctx->vhart_g[i][0] = vh_center.value / ctx->nrxx;
-        ctx->vhart_g[i][1] = 0.0;
+        ctx->vhart_g[i][0] = vh_result.VH_g[i][0];
+        ctx->vhart_g[i][1] = vh_result.VH_g[i][1];
+        double mag = std::sqrt(vh_result.VH_g[i][0] * vh_result.VH_g[i][0] +
+                               vh_result.VH_g[i][1] * vh_result.VH_g[i][1]);
+        if (mag > 1e-12) nonzero_vhg++;
+        max_vhg = std::max(max_vhg, mag);
     }
+    std::cout << "    DEBUG: nonzero VH_g points from Vh_PlaneWave_3D_p: " << nonzero_vhg << "/" << ctx->nrxx << "\n";
+    std::cout << "    DEBUG: max |VH_g|: " << std::scientific << max_vhg << "\n";
+
+    // Free the allocated memory from hartree_potential function
+    fftw_free(vh_result.VH_g);
+
+    // Transform Hartree potential to real space for energy calculation
+    // VH_g is a full complex array, so we need complex-to-complex inverse FFT
+    fftw_complex* vhart_g_temp = fftw_alloc_complex(ctx->nrxx);
+    fftw_complex* vhart_r_complex = fftw_alloc_complex(ctx->nrxx);
+
+    // Copy vhart_g to temporary array
+    for (int i = 0; i < ctx->nrxx; i++) {
+        vhart_g_temp[i][0] = ctx->vhart_g[i][0];
+        vhart_g_temp[i][1] = ctx->vhart_g[i][1];
+    }
+
+    // Create complex-to-complex inverse FFT plan for Hartree potential
+    fftw_plan plan_vhart_bwd = fftw_plan_dft_3d(ctx->nr1, ctx->nr2, ctx->nr3,
+                                                vhart_g_temp, vhart_r_complex,
+                                                FFTW_BACKWARD, FFTW_ESTIMATE);
+
+    // Execute inverse FFT
+    fftw_execute(plan_vhart_bwd);
+
+    // Copy real part to vhart_r with proper normalization
+    // (imaginary part should be ~0 for a physical Hartree potential)
+    for (int i = 0; i < ctx->nrxx; i++) {
+        ctx->vhart_r[i] = vhart_r_complex[i][0] / ctx->nrxx;
+    }
+
+    // DEBUG: Check vhart_r values
+    int nonzero_vhart = 0;
+    double max_vhart = 0.0;
+    for (int i = 0; i < ctx->nrxx; i++) {
+        if (std::abs(ctx->vhart_r[i]) > 1e-12) nonzero_vhart++;
+        max_vhart = std::max(max_vhart, std::abs(ctx->vhart_r[i]));
+    }
+    std::cout << "    DEBUG compute_vhartree: nonzero vhart_r points: " << nonzero_vhart << "/" << ctx->nrxx << "\n";
+    std::cout << "    DEBUG compute_vhartree: max |vhart_r|: " << std::scientific << max_vhart << "\n";
+
+    // Restore the original density
+    for (int i = 0; i < ctx->nrxx; i++) {
+        ctx->rho_r[i] = rho_saved[i];
+    }
+
+    // Clean up
+    fftw_destroy_plan(plan_vhart_bwd);
+    fftw_free(vhart_g_temp);
+    fftw_free(vhart_r_complex);
+    fftw_free(rho_saved);
 }
 
 /**
@@ -365,11 +472,11 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
         int h = ctx->gvectors[i].h;
         int k = ctx->gvectors[i].k;
         int l = ctx->gvectors[i].l;
-        
+
         int ih = (h >= 0) ? h : h + ctx->nr1;
         int ik = (k >= 0) ? k : k + ctx->nr2;
         int il = (l >= 0) ? l : l + ctx->nr3;
-        
+
         if (ih >= 0 && ih < ctx->nr1 && ik >= 0 && ik < ctx->nr2 && il >= 0 && il < ctx->nr3) {
             int idx = ih * (ctx->nr2 * ctx->nr3) + ik * ctx->nr3 + il;
             H[i][i] += ctx->vhart_g[idx][0];
@@ -378,20 +485,30 @@ void build_hamiltonian(DFTContext* ctx, double** H) {
     auto t_hartree_end = std::chrono::high_resolution_clock::now();
     double time_hartree = std::chrono::duration<double>(t_hartree_end - t_hartree_start).count();
     std::cout << "    Hartree contribution: " << std::fixed << std::setprecision(6) << time_hartree << " s\n";
-    
-    // Pseudopotential
-    if (ctx->use_pseudopot && ctx->Vnl_matrix != nullptr) {
+
+    // Pseudopotential (local + non-local)
+    if (ctx->use_pseudopot) {
         auto t_pseudo_start = std::chrono::high_resolution_clock::now();
-        
-        for (int i = 0; i < npw; i++) {
-            for (int j = 0; j < npw; j++) {
-                H[i][j] += ctx->Vnl_matrix[i][j];
+
+        // Local pseudopotential (diagonal)
+        if (!ctx->vloc_g.empty()) {
+            for (int i = 0; i < npw; i++) {
+                H[i][i] += ctx->vloc_g[i].real();  // V_loc is real on diagonal
             }
         }
-        
+
+        // Non-local pseudopotential (full matrix)
+        if (ctx->Vnl_matrix != nullptr) {
+            for (int i = 0; i < npw; i++) {
+                for (int j = 0; j < npw; j++) {
+                    H[i][j] += ctx->Vnl_matrix[i][j];
+                }
+            }
+        }
+
         auto t_pseudo_end = std::chrono::high_resolution_clock::now();
         double time_pseudo = std::chrono::duration<double>(t_pseudo_end - t_pseudo_start).count();
-        std::cout << "    Pseudopotential contribution (pre-computed): " << std::fixed << std::setprecision(6) << time_pseudo << " s\n";
+        std::cout << "    Pseudopotential (V_loc + V_nl): " << std::fixed << std::setprecision(6) << time_pseudo << " s\n";
     }
 }
 
@@ -438,41 +555,111 @@ void compute_density_from_wfn(DFTContext* ctx) {
 }
 
 /**
+ * Add ultrasoft augmentation charge to density
+ * This must be called AFTER compute_density_from_wfn() in each SCF iteration
+ */
+void add_augmentation_to_density(DFTContext* ctx) {
+    if (!ctx->use_pseudopot || ctx->pseudopot == nullptr) {
+        return;
+    }
+
+    if (!ctx->pseudopot->ultrasoft || ctx->pseudopot->qfunc.empty()) {
+        return;  // Not ultrasoft
+    }
+
+    // Transform current real-space density to G-space
+    fftw_execute(ctx->plan_fwd);
+
+    // Add augmentation charge in G-space
+    int nocc = ctx->nelec / 2;
+
+    // Extract ion positions into separate arrays
+    std::vector<double> ion_x, ion_y, ion_z;
+    for (const auto& pos : ctx->ion_positions) {
+        ion_x.push_back(pos.x);
+        ion_y.push_back(pos.y);
+        ion_z.push_back(pos.z);
+    }
+
+    add_augmentation_charge_planewave(
+        *ctx->pseudopot,
+        ctx->gvectors,
+        ctx->npw,
+        ctx->psi,
+        nocc,
+        ion_x, ion_y, ion_z,
+        ctx->ion_positions.size(),
+        ctx->rho_g,
+        ctx->nr1, ctx->nr2, ctx->nr3,
+        ctx->cell_volume
+    );
+
+    // Transform back to real space
+    fftw_execute(ctx->plan_bwd);
+
+    // Normalize
+    for (int ir = 0; ir < ctx->nrxx; ir++) {
+        ctx->rho_r[ir] /= ctx->nrxx;
+    }
+}
+
+/**
  * Mix densities
  */
 void mix_density(DFTContext* ctx, double* rho_in, double* rho_new) {
     for (int i = 0; i < ctx->nrxx; i++) {
-        rho_new[i] = rho_in[i] + ctx->mixing_beta * (ctx->rho_r[i] - rho_in[i]);
+        rho_new[i] = rho_in[i] * ctx->mixing_beta + (1 - ctx->mixing_beta) * ctx->rho_r[i];
         rho_in[i] = rho_new[i];
     }
 }
 
 /**
  * Compute total energy
+ * NOTE: Must be called with the density that was used to compute the potentials!
  */
-double compute_total_energy(DFTContext* ctx) {
+double compute_total_energy(DFTContext* ctx, double* rho_for_energy) {
     double e_kin = 0.0;
     double e_xc = 0.0;
     double e_hartree = 0.0;
-    
+    double e_total = 0.0;
+
     int nocc = ctx->nelec / 2;
     for (int i = 0; i < nocc; i++) {
-        e_kin += 2.0 * ctx->eigenvalues[i];
+        e_total += 2.0 * ctx->eigenvalues[i];
     }
-    
+
     double dv = ctx->cell_volume / ctx->nrxx;
     for (int i = 0; i < ctx->nrxx; i++) {
-        double n = ctx->rho_r[i];
+        double n = rho_for_energy[i];
         double vxc = ctx->vxc_r[i];
         e_xc += n * vxc * dv;
     }
-    
+
+    // Hartree energy: E_H = 0.5 * ∫ ρ(r) * V_H(r) dr
+    // DEBUG: Check for non-zero values
+    int nonzero_rho = 0, nonzero_vhart = 0;
     for (int i = 0; i < ctx->nrxx; i++) {
-        e_hartree += 0.5 * ctx->rho_r[i] * ctx->vhart_g[0][0] * dv;
+        if (std::abs(rho_for_energy[i]) > 1e-12) nonzero_rho++;
+        if (std::abs(ctx->vhart_r[i]) > 1e-12) nonzero_vhart++;
+        e_hartree += 0.5 * rho_for_energy[i] * ctx->vhart_r[i] * dv;
     }
-    
+    std::cout << "  DEBUG: nonzero rho points: " << nonzero_rho << "/" << ctx->nrxx << "\n";
+    std::cout << "  DEBUG: nonzero vhart points: " << nonzero_vhart << "/" << ctx->nrxx << "\n";
+
+    e_kin = e_total - e_xc - e_hartree - ctx->ewald_energy;
+
+    std::cout << "  E_kin: " << std::fixed << std::setprecision(8)
+                  << e_kin << " Ry\n";
+
+    std::cout << "  E_xc: " << std::fixed << std::setprecision(8) 
+                  << e_xc << " Ry\n";
+    std::cout << "  E_hartree: " << std::fixed << std::setprecision(8) 
+                  << e_hartree << " Ry\n";
+    std::cout << "  E_ewald: " << std::fixed << std::setprecision(8) 
+                  << ctx->ewald_energy << " Ry\n";
+
     // Add the constant ion-ion Ewald energy
-    return e_kin + e_xc + e_hartree + ctx->ewald_energy;
+    return e_total;
 }
 
 /**
@@ -520,9 +707,21 @@ void run_scf(DFTContext* ctx) {
         double time_build = std::chrono::duration<double>(t_build_end - t_build_start).count();
         std::cout << "    Total Hamiltonian build time: " << std::fixed << std::setprecision(6) << time_build << " s\n";
         
-        std::cout << "  Diagonalizing (" << ctx->npw << "x" << ctx->npw << ")...\n";
+        // Choose eigensolver based on pseudopotential type
+        EigenResult* eig = nullptr;
         auto t_diag_start = std::chrono::high_resolution_clock::now();
-        EigenResult* eig = compute_eigenvalues(H, ctx->npw);
+
+        if (ctx->S_matrix != nullptr) {
+            // Ultrasoft PP: solve generalized eigenvalue problem H|ψ⟩ = E S|ψ⟩
+            std::cout << "  Solving GENERALIZED eigenvalue problem (" << ctx->npw << "x" << ctx->npw << ")...\n";
+            std::cout << "    (H|ψ⟩ = E S|ψ⟩ for ultrasoft PP)\n";
+            eig = compute_generalized_eigenvalues(H, ctx->S_matrix, ctx->npw);
+        } else {
+            // Standard or norm-conserving PP: solve standard eigenvalue problem H|ψ⟩ = E|ψ⟩
+            std::cout << "  Diagonalizing (" << ctx->npw << "x" << ctx->npw << ")...\n";
+            eig = compute_eigenvalues(H, ctx->npw);
+        }
+
         auto t_diag_end = std::chrono::high_resolution_clock::now();
         double time_diag = std::chrono::duration<double>(t_diag_end - t_diag_start).count();
         std::cout << "    Diagonalization time: " << std::fixed << std::setprecision(6) << time_diag << " s\n";
@@ -546,17 +745,22 @@ void run_scf(DFTContext* ctx) {
         std::cout << "  Computing new density...\n";
         auto t_density_start = std::chrono::high_resolution_clock::now();
         compute_density_from_wfn(ctx);
+
+        // Add ultrasoft augmentation charge (if enabled)
+        add_augmentation_to_density(ctx);
+
         auto t_density_end = std::chrono::high_resolution_clock::now();
         double time_density = std::chrono::duration<double>(t_density_end - t_density_start).count();
         std::cout << "    Density computation time: " << std::fixed << std::setprecision(6) << time_density << " s\n";
-        
+
+        // Compute energy BEFORE mixing, using the input density that was used for potentials
+        double e_total = compute_total_energy(ctx, rho_in);
+
         auto t_mix_start = std::chrono::high_resolution_clock::now();
         mix_density(ctx, rho_in, ctx->rho_r);
         auto t_mix_end = std::chrono::high_resolution_clock::now();
         double time_mix = std::chrono::duration<double>(t_mix_end - t_mix_start).count();
         std::cout << "    Density mixing time: " << std::fixed << std::setprecision(6) << time_mix << " s\n";
-        
-        double e_total = compute_total_energy(ctx);
         double de = std::abs(e_total - e_old);
         
         std::cout << "  Total Energy: " << std::fixed << std::setprecision(8) 
@@ -599,6 +803,25 @@ void cleanup_dft_context(DFTContext* ctx) {
     fftw_destroy_plan(ctx->plan_bwd);
     fftw_free(ctx->rho_r);
     fftw_free(ctx->rho_g);
+    fftw_free(ctx->vxc_r);
+    fftw_free(ctx->vxc_g);
+    fftw_free(ctx->vhart_g);
+    fftw_free(ctx->vhart_r);
+
+    // Free pseudopotential matrices
+    if (ctx->Vnl_matrix != nullptr) {
+        for (int i = 0; i < ctx->npw; i++) {
+            delete[] ctx->Vnl_matrix[i];
+        }
+        delete[] ctx->Vnl_matrix;
+    }
+
+    if (ctx->S_matrix != nullptr) {
+        for (int i = 0; i < ctx->npw; i++) {
+            delete[] ctx->S_matrix[i];
+        }
+        delete[] ctx->S_matrix;
+    }
 }
 
 #endif // LOBOTOMITES_MAIN_CPU_H

@@ -15,11 +15,18 @@ typedef struct {
 
 // LAPACK function declarations
 extern "C" {
-    // Symmetric... Ideal
+    // Symmetric eigenvalue problem
     void dsyevd_(char* jobz, char* uplo, int* n, double* a, int* lda,
-                 double* w, double* work, int* lwork, int* iwork, 
+                 double* w, double* work, int* lwork, int* iwork,
                  int* liwork, int* info);
-    
+
+    // Generalized symmetric eigenvalue problem (for ultrasoft PP)
+    // Solves A*x = lambda*B*x where both A and B are symmetric
+    void dsygvd_(int* itype, char* jobz, char* uplo, int* n,
+                 double* a, int* lda, double* b, int* ldb,
+                 double* w, double* work, int* lwork, int* iwork,
+                 int* liwork, int* info);
+
     // Non-symmetric
     void dgeev_(char* jobvl, char* jobvr, int* n, double* a, int* lda,
                 double* wr, double* wi, double* vl, int* ldvl,
@@ -172,4 +179,89 @@ void free_eigen_result(EigenResult* result) {
         free(result->vectors);
         free(result);
     }
+}
+
+/**
+ * Solve generalized eigenvalue problem: H|ψ⟩ = E S|ψ⟩
+ * Required for ultrasoft pseudopotentials where S ≠ I
+ *
+ * Uses LAPACK's dsygvd to solve A*x = lambda*B*x
+ * where A = Hamiltonian, B = S-overlap matrix
+ *
+ * @param H Hamiltonian matrix (npw x npw)
+ * @param S Overlap matrix (npw x npw)
+ * @param n Matrix size (number of plane waves)
+ * @return EigenResult containing eigenvalues and eigenvectors
+ */
+EigenResult* compute_generalized_eigenvalues(double** H, double** S, int n) {
+    EigenResult* result = (EigenResult*)malloc(sizeof(EigenResult));
+    result->n_eigs = n;
+    result->matrix_size = n;
+    result->values = (double*)malloc(n * sizeof(double));
+    result->vectors = (double**)malloc(n * sizeof(double*));
+    for (int i = 0; i < n; i++) {
+        result->vectors[i] = (double*)malloc(n * sizeof(double));
+    }
+
+    // Convert to column-major format for LAPACK
+    double* A = (double*)malloc(n * n * sizeof(double));  // Hamiltonian
+    double* B = (double*)malloc(n * n * sizeof(double));  // Overlap matrix
+
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            A[j * n + i] = H[i][j];
+            B[j * n + i] = S[i][j];
+        }
+    }
+
+    // LAPACK parameters for generalized symmetric eigenvalue problem
+    int itype = 1;      // Problem type: A*x = lambda*B*x
+    char jobz = 'V';    // Compute eigenvalues and eigenvectors
+    char uplo = 'U';    // Upper triangle of A and B are stored
+    int info;
+    int lwork = -1;     // Query optimal workspace size
+    int liwork = -1;
+    double work_query;
+    int iwork_query;
+
+    // Workspace query
+    dsygvd_(&itype, &jobz, &uplo, &n, A, &n, B, &n, result->values,
+            &work_query, &lwork, &iwork_query, &liwork, &info);
+
+    // Allocate workspace
+    lwork = (int)work_query;
+    liwork = iwork_query;
+    double* work = (double*)malloc(lwork * sizeof(double));
+    int* iwork = (int*)malloc(liwork * sizeof(int));
+
+    // Actual computation
+    dsygvd_(&itype, &jobz, &uplo, &n, A, &n, B, &n, result->values,
+            work, &lwork, iwork, &liwork, &info);
+
+    if (info != 0) {
+        if (info > 0 && info <= n) {
+            fprintf(stderr, "ERROR: dsygvd failed - B matrix is not positive definite (info=%d)\n", info);
+            fprintf(stderr, "       Leading minor of order %d is not positive definite.\n", info);
+        } else if (info > n) {
+            fprintf(stderr, "ERROR: dsygvd failed - convergence failure (info=%d)\n", info);
+        } else {
+            fprintf(stderr, "ERROR: dsygvd failed with info=%d\n", info);
+        }
+        free(A); free(B); free(work); free(iwork);
+        return result;
+    }
+
+    // Extract eigenvectors (LAPACK stores them in columns of A)
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            result->vectors[i][j] = A[i * n + j];  // Column i of A
+        }
+    }
+
+    free(A);
+    free(B);
+    free(work);
+    free(iwork);
+
+    return result;
 }
