@@ -1,456 +1,506 @@
 #include <iostream>
 #include <vector>
 #include <complex>
-#include <cmath>
-#include <chrono>
 #include <omp.h>
-#include <fftw3.h>
+#include <cmath>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <iomanip>
+#include <chrono>
 #include <stdexcept>
 
-double compute_alpha_qe(
-    double alat,                   // lattice parameter (bohr), QE "alat"
-    const std::vector<double> &zv, // zv[0..ntyp-1] (ionic charges Zval)
-    const std::vector<int> &ityp,  // ityp[0..nat-1] (type index for each atom, 0-based)
-    double gcutm                   // max dimensionless |G|^2 (QE style)
-)
-{
-    const double tpi = 2.0 * M_PI;
-    const double tpiba2 = (tpi / alat) * (tpi / alat);
-
-    // total ionic charge in the unit cell
-    double charge = 0.0;
-    for (int na = 0; na < (int)ityp.size(); ++na)
-    {
-        int t = ityp[na]; // type index
-        charge += zv[t];
-    }
-
-    // start from alpha = 2.9 and decrease by 0.1 until upperbound < 1e-7
-    double alpha = 2.9;
-    while (true)
-    {
-        alpha -= 0.1;
-        if (alpha <= 0.0)
-        {
-            throw std::runtime_error("ewald: optimal alpha not found (QE-style)");
-        }
-
-        double arg = std::sqrt(tpiba2 * gcutm / (4.0 * alpha));
-        double upperbound = 2.0 * charge * charge * std::sqrt(2.0 * alpha / tpi) * std::erfc(arg);
-
-        if (upperbound <= 1.0e-7)
-            break;
-    }
-
-    return alpha; // dimensionless, QE-style
-}
-
-double compute_rmax_qe(double alpha, double alat)
-{
-    // rmax is in *crystal coordinate* units (multiplying at columns),
-    // rr = sqrt(r2)*alat gives the real distance in bohr.
-    return 4.0 / std::sqrt(alpha) / alat;
-}
-
-double compute_rmax_realspace_qe(double alpha)
-{
-    // rr such that sqrt(alpha)*rr = 4 -> rr = 4 / sqrt(alpha)
-    return 4.0 / std::sqrt(alpha); // in bohr
-}
-
-static inline int index(int ix, int iy, int iz, int Nx, int Ny)
-{
-    return (iz * Ny + iy) * Nx + ix; // creates a 3d grid points
-}
-
+// 3 componet vector for holding vals at a spesific pt
 struct Vec3
 {
     double x, y, z;
 };
 
-double Ve_PlaneWave_3D_s(
-    const std::vector<Vec3> &ion_pos,
-    const std::vector<double> &Z,
-    double Lx, double Ly, double Lz,
-    int Nx, int Ny, int Nz)
+// calcualte alpha
+// lattice_const- lattice parameter (bohr)
+// zv- ionic charge for each index
+// ind- index of each atom location
+// g_cut- maximum abs(G)^2
+
+double calc_alpha(double lattice_const, const std::vector<double> &zv, const std::vector<int> &ind, double g_cut)
 {
-    double VE_at_r = 0;
-    double alat = Lx;
-    const int Ntot = Nx * Ny * Nz;
-    const double V = Lx * Ly * Lz;
+    const double twopi = 2.0 * M_PI;
+    const double alpha_coeff = (twopi / lattice_const) * (twopi / lattice_const); // (2π/a)^2
 
-    double Gmax = 0.0;
-    std::vector<double> zv = {Z};
-    double alpha = 0;
-
-    // inside your G loops:
-    const double TWO_PI = 2.0 * M_PI;
-
-    //the reciporacal ewald energy
-    double E_rec = 0.0; 
-
-    for (int iz = 0; iz < Nz; ++iz) // z-loop
+    double charge = 0.0;                         // total ionic charge in the unit cell
+    for (int na = 0; na < (int)ind.size(); ++na) // loop through the indexs for each atom ancd calcualte the total atomic charge in the unti cell
     {
-        int kz = (iz <= Nz / 2) ? iz : iz - Nz; // convert integer k values into G-vectors of form g=2pi/k and ensure that each value is signed properly such that
-        double Gz = TWO_PI * kz / Lz;           // values range over full Bz so high frequncys are reflected back into the Bz as negitive frequencys such that they repesent the wave fucntion of prevouis perodic cell entering thsi cell
+        int t = ind[na];
+        charge += zv[t];
+    }
 
-        for (int iy = 0; iy < Ny; ++iy)
+    double alpha = 2.9; // start with alpha as 2.9(idk thats what the internet said)
+    while (true)
+    { // decreamnt alpha untill error is low enough
+        alpha -= 0.1;
+        if (alpha <= 0.0) // throw error if it gets to zero, alpha must be real and positve
         {
-            int ky = (iy <= Ny / 2) ? iy : iy - Ny; // y-loop see above
-            double Gy = TWO_PI * ky / Ly;
-
-            for (int ix = 0; ix < Nx; ++ix)
-            {
-                int kx = (ix <= Nx / 2) ? ix : ix - Nx; // x-loop see above
-                double Gx = TWO_PI * kx / Lx;
-
-                int idx = index(ix, iy, iz, Nx, Ny); // creats a unit grid volume for each Nz
-
-                double G = Gx * Gx + Gy * Gy + Gz * Gz; // calcualte G magnitude
-
-                Gmax = std::max(Gmax, G); // G is already |G|^2
-               // double Gmax = std::max(Gmax, 200.0 / (Lx * Lx));
-
-                // One species type, valence charge Zval
-                double tpi_over_alat = 2.0 * M_PI / alat; // bohr^-1
-
-                double gcutm = (Gmax / tpi_over_alat) * (Gmax / tpi_over_alat);
-
-                std::vector<int> ityp(ion_pos.size(), 0); // all atoms are type 0
-                alpha = compute_alpha_qe(alat, zv, ityp, gcutm);
-
-                if (G == 0)
-                { // ensure g=0 is 0
-                    continue;
-                }
-
-                std::complex<double> Sg(0.0, 0.0); // create stucture factor vector
-
-                // compute structure factor
-                for (int i = 0; i < ion_pos.size(); ++i)
-                {
-                    double Gr_product = ion_pos[i].x * Gx + ion_pos[i].y * Gy + ion_pos[i].z * Gz; // compute dot product of G and R vectors
-                    std::complex<double> phase(std::cos(Gr_product), -std::sin(Gr_product));       // convert dot product magnitude into a vector of real and imaginary magnitudes
-                    Sg += Z[i] * phase;                                                            // sum the vectors such that we get sum(z_i*e^-iG*r)
-                }
-
-                double damping = std::exp(-G / (4.0 * alpha * alpha));
-
-                E_rec += (4.0 * M_PI / G) * damping * std::norm(Sg); // calcutate gaussian smoothing factor for this G point
-            }
+            throw std::runtime_error("bad alpha");
         }
+
+        double arg = std::sqrt(alpha_coeff * g_cut / (4.0 * alpha));                                 // calculate ewald error bound to know how much it will damp the larges G value
+        double upperbound = 2.0 * charge * charge * std::sqrt(2.0 * alpha / twopi) * std::erfc(arg); // fincd upper bound error based on arg
+
+        if (upperbound <= 1.0e-7) // if the upper error bound is within threshold break
+            break;
     }
 
-    E_rec *= (1.0 / (2.0 * V)); // divide by 1/2v to renormailize and compneste for double suming giving the reciporacal space energy
-
-    // calcualte realspace ewald energy
-    double E_real = 0.0;
-    double Rcut = compute_rmax_realspace_qe(alpha); // calculate cutoff radius for real space interatactions
-
-    int NxR = int(Rcut / Lx) + 1; // for each dimention deterimine how many copies of the cell fit inside the cutoff radius
-    int NyR = int(Rcut / Ly) + 1;
-    int NzR = int(Rcut / Lz) + 1;
-
-    for (int nx = -NxR; nx <= NxR; nx++) // loopnthrough each of the periodic cells by looping through each dim
-        for (int ny = -NyR; ny <= NyR; ny++)
-            for (int nz = -NzR; nz <= NzR; nz++)
-            {
-
-                double Rx = nx * Lx; // compute the translation vectors, ie the distance to shift the ions postion into the next cell
-                double Ry = ny * Ly;
-                double Rz = nz * Lz;
-
-                for (int i = 0; i < ion_pos.size(); i++) // loop through each pair of ions
-                    for (int j = 0; j < ion_pos.size(); j++)
-                    {
-
-                        if (nx == 0 && ny == 0 && nz == 0 && i == j) // ignore self ion interactions
-                            continue;
-
-                        double dx = ion_pos[i].x - ion_pos[j].x + Rx;
-                        double dy = ion_pos[i].y - ion_pos[j].y + Ry;
-                        double dz = ion_pos[i].z - ion_pos[j].z + Rz;
-                        double r = std::sqrt(dx * dx + dy * dy + dz * dz); // calcualte radius for r based on points
-
-                        if (r == 0.0)
-                            continue;
-                        if (r > Rcut)
-                            continue; // ensure that the ion is in the radius
-
-                        E_real += Z[i] * Z[j] * std::erfc(alpha * r) / r; // using the shortrange erfc aproximation to remove long range interactions
-                    }
-            }
-
-    E_real *= 0.5; // correct for double sum
-
-    double self_correction = 0;
-    for (int i = 0; i < ion_pos.size(); i++)
-    { // calcualte the self correting term
-        self_correction += -alpha * Z[i] * Z[i] / std::sqrt(M_PI);
-    }
-
-    double backround = 0;
-    for (double Zi : Z)
-    { // sum the charge nuclear charge
-        backround += Zi;
-    }
-
-    backround = -M_PI * (backround * backround) / (alpha * alpha * V); // background neutrality term
-
-    return E_real + E_rec + self_correction + backround; // sum all componets
+    return alpha; // return alpha val
 }
-double Ve_PlaneWave_3D_P(
-    const std::vector<Vec3> &ion_pos,
-    const std::vector<double> &Z,
-    double Lx, double Ly, double Lz,
-    int Nx, int Ny, int Nz)
+
+// convert fractional cyrastal points to cartesian for cubic
+static inline Vec3 reciprocal_cart_cubic(const Vec3 &tau_cryst, double lattice_const)
 {
-    double VE_at_r = 0;
-    double alat = Lx;
-    const int Ntot = Nx * Ny * Nz;
-    const double V = Lx * Ly * Lz;
+    Vec3 r;
+    r.x = tau_cryst.x * lattice_const;
+    r.y = tau_cryst.y * lattice_const;
+    r.z = tau_cryst.z * lattice_const;
+    return r;
+}
 
-    double Gmax = 0.0;
-    std::vector<double> zv = {Z};
-    double alpha = 0;
+// lattice_const- latice constant distance a
+//  atom positions in crystal fractional coordinates
+//  list of ionic valence charges from the pseudopotentials
+//  g_cut- cutoff g-val- for deterimining error
+// E_real- real space energy vector
+//  E_rec- recipracal space energy vector
+//  E_self- self correction energy vector
+//  E_backround- backround correctiosn energy vector
+double V_ewald_s(double lattice_const, const std::vector<Vec3> &tau_cryst, const std::vector<double> &Zatom, double g_cut, double &E_real, double &E_rec, double &E_self, double &E_back)
+{
+    const int nat = (int)tau_cryst.size();
 
-    // inside your G loops:
-    const double TWO_PI = 2.0 * M_PI;
+    // build zv and ind arrays for alpha choice
+    std::vector<double> zv(1);    // one species
+    zv[0] = Zatom[0];             // all atoms same Z
+    std::vector<int> ind(nat, 0); // all atoms type 0
 
-    // compute ithe reciporacal ewald energy
-    double E_rec = 0.0; // <<< CHANGED
+    // choose alpha as QE does
+    double alpha = calc_alpha(lattice_const, zv, ind, g_cut); // alpha used in Ewald sum
+    double eta = std::sqrt(alpha);                            // eta = sqrt(alpha)
 
-    #pragma omp parallel for collapse(3) reduction(+ : E_rec)
-    for (int iz = 0; iz < Nz; ++iz) // z-loop
+    // cell volume and reciprocal prefactors for cubic cell
+    const double V = lattice_const * lattice_const * lattice_const; // cell volume
+    const double twopiba = 2.0 * M_PI / lattice_const;
+    const double alpha_coeff = twopiba * twopiba;
+
+    // convert crystal positions to cartesian
+    std::vector<Vec3> r_cart(nat);
+    for (int i = 0; i < nat; ++i)
     {
-        int kz = (iz <= Nz / 2) ? iz : iz - Nz; // convert integer k values into G-vectors of form g=2pi/k and ensure that each value is signed properly such that
-        double Gz = TWO_PI * kz / Lz;           // values range over full Bz so high frequncys are reflected back into the Bz as negitive frequencys such that they repesent the wave fucntion of prevouis perodic cell entering thsi cell
-
-        for (int iy = 0; iy < Ny; ++iy)
-        {
-            int ky = (iy <= Ny / 2) ? iy : iy - Ny; // y-loop see above
-            double Gy = TWO_PI * ky / Ly;
-
-            for (int ix = 0; ix < Nx; ++ix)
-            {
-                int kx = (ix <= Nx / 2) ? ix : ix - Nx; // x-loop see above
-                double Gx = TWO_PI * kx / Lx;
-
-                int idx = index(ix, iy, iz, Nx, Ny); // creats a unit grid volume for each Nz
-
-                double G = Gx * Gx + Gy * Gy + Gz * Gz; // calcualte G magnitude
-
-                Gmax = std::max(Gmax, G); // G is already |G|^2
-                //double Gmax = std::max(Gmax, 200.0 / (Lx * Lx));
-
-                // One species type, valence charge Zval
-                double tpi_over_alat = 2.0 * M_PI / alat; // bohr^-1
-
-                double gcutm = (Gmax / tpi_over_alat) * (Gmax / tpi_over_alat);
-
-                std::vector<int> ityp(ion_pos.size(), 0); // all atoms are type 0
-                alpha = compute_alpha_qe(alat, zv, ityp, gcutm);
-
-                if (G == 0)
-                { // ensure g=0 is 0
-                    continue;
-                }
-
-                std::complex<double> Sg(0.0, 0.0); // create stucture factor vector
-
-                // compute structure factor
-                for (int i = 0; i < ion_pos.size(); ++i)
-                {
-                    double Gr_product = ion_pos[i].x * Gx + ion_pos[i].y * Gy + ion_pos[i].z * Gz; // compute dot product of G and R vectors
-                    std::complex<double> phase(std::cos(Gr_product), -std::sin(Gr_product));       // convert dot product magnitude into a vector of real and imaginary magnitudes
-                    Sg += Z[i] * phase;                                                            // sum the vectors such that we get sum(z_i*e^-iG*r)
-                }
-
-                double damping = std::exp(-G / (4.0 * alpha * alpha));
-
-                E_rec += (4.0 * M_PI / G) * damping * std::norm(Sg); // calcutate gaussian smoothing factor for this G point
-            }
-        }
+        r_cart[i] = reciprocal_cart_cubic(tau_cryst[i], lattice_const); // cartesian in bohr
     }
+    // above here
+    //  calcualte realspace ewald energy
+    E_real = 0.0;
 
-    E_rec *= (1.0 / (2.0 * V)); // divide by 1/2v to renormailize and compneste for double suming giving the reciporacal space energy
-
-    // calcualte realspace ewald energy
-    double E_real = 0.0;
-    double Rcut = compute_rmax_realspace_qe(alpha); // calculate cutoff radius for real space interatactions
-
-    int NxR = int(Rcut / Lx) + 1; // for each dimention deterimine how many copies of the cell fit inside the cutoff radius
-    int NyR = int(Rcut / Ly) + 1;
-    int NzR = int(Rcut / Lz) + 1;
-    #pragma omp parallel for collapse(3) reduction(+ : E_real)
-    for (int nx = -NxR; nx <= NxR; nx++) // loopnthrough each of the periodic cells by looping through each dim
-        for (int ny = -NyR; ny <= NyR; ny++)
-            for (int nz = -NzR; nz <= NzR; nz++)
+    double Rcut = 4.0 / std::sqrt(alpha);      // real-space cutoff in bohr
+    int NxR = (int)(Rcut / lattice_const) + 1; // number of image cells in each direction
+    int NyR = NxR;
+    int NzR = NxR;
+    // loop through each of the periodic cells by looping through each dim
+    for (int nx = -NxR; nx <= NxR; ++nx)         // x-loop
+        for (int ny = -NyR; ny <= NyR; ++ny)     // y-loop
+            for (int nz = -NzR; nz <= NzR; ++nz) // z-loop
             {
+                double Rx = nx * lattice_const; // compute the translation vectors, ie the distance to shift the ions postion into the next cell
+                double Ry = ny * lattice_const;
+                double Rz = nz * lattice_const;
 
-                double Rx = nx * Lx; // compute the translation vectors, ie the distance to shift the ions postion into the next cell
-                double Ry = ny * Ly;
-                double Rz = nz * Lz;
-
-                for (int i = 0; i < ion_pos.size(); i++) // loop through each pair of ions
-                    for (int j = 0; j < ion_pos.size(); j++)
+                for (int i = 0; i < nat; ++i) // loop through each pair of ions
+                    for (int j = 0; j < nat; ++j)
                     {
-
-                        if (nx == 0 && ny == 0 && nz == 0 && i == j) // ignore self ion interactions
+                        if (nx == 0 && ny == 0 && nz == 0 && i == j) // ignore self interactions for ions
                             continue;
 
-                        double dx = ion_pos[i].x - ion_pos[j].x + Rx;
-                        double dy = ion_pos[i].y - ion_pos[j].y + Ry;
-                        double dz = ion_pos[i].z - ion_pos[j].z + Rz;
+                        double dx = r_cart[i].x - r_cart[j].x + Rx;
+                        double dy = r_cart[i].y - r_cart[j].y + Ry;
+                        double dz = r_cart[i].z - r_cart[j].z + Rz;
+
                         double r = std::sqrt(dx * dx + dy * dy + dz * dz);
-
                         if (r == 0.0)
                             continue;
                         if (r > Rcut)
-                            continue; // ensure that the ion is in the radius
+                            continue; // ensure that the ion is in the radius of cutoff
 
-                        E_real += Z[i] * Z[j] * std::erfc(alpha * r) / r; // using the shortrange erfc aproximation to remove long range interactions
+                        E_real += Zatom[i] * Zatom[j] * std::erfc(eta * r) / r; // using the shortrange erfc aproximation to remove long range interactions
                     }
             }
 
     E_real *= 0.5; // correct for double sum
 
-    double self_correction = 0;
-    for (int i = 0; i < ion_pos.size(); i++)
-    { // calcualte the self correting term
-        self_correction += -alpha * Z[i] * Z[i] / std::sqrt(M_PI);
+    // the reciporacal ewald energy
+    E_rec = 0.0;
+
+    // dimensionless G^2 is (|G|^2 / alpha_coeff) = h^2 + k^2 + l^2 for cubic cell
+    int maxh = (int)std::ceil(std::sqrt(g_cut)) + 1; // max index in each direction
+
+    for (int h = -maxh; h <= maxh; ++h)
+    {
+
+        for (int k = -maxh; k <= maxh; ++k)
+        {
+            for (int l = -maxh; l <= maxh; ++l)
+            {
+                if (h == 0 && k == 0 && l == 0)
+                    continue; // skip G=0
+
+                double G_dimless = double(h * h + k * k + l * l); // (|G|^2 / alpha_coeff)
+                if (G_dimless > g_cut)
+                    continue; // outside G cutoff
+
+                double Gx = twopiba * h; // reciprocal vector components
+                double Gy = twopiba * k;
+                double Gz = twopiba * l;
+
+                double G = Gx * Gx + Gy * Gy + Gz * Gz; // |G|^2 in bohr^-2
+
+                // compute structure factor S(G) = Σ_i Z_i e^{i G·r_i}
+                std::complex<double> Sg(0.0, 0.0);
+                for (int i = 0; i < nat; ++i)
+                {
+                    double dot = Gx * r_cart[i].x + Gy * r_cart[i].y + Gz * r_cart[i].z; // G·r
+                    double c = std::cos(dot);
+                    double s = std::sin(dot);
+                    std::complex<double> phase(c, s); // e^{i G·r}
+                    Sg += Zatom[i] * phase;
+                }
+
+                double damping = std::exp(-G / (4.0 * alpha)); // Gaussian screening exp(-G^2/(4α))
+                double SG = std::norm(Sg);                     // |S(G)|^2
+
+                E_rec += (4.0 * M_PI / G) * damping * SG; // reciprocal contribution
+            }
+        }
     }
 
-    double backround = 0;
-    for (double Zi : Z)
-    { // sum the charge nuclear charge
-        backround += Zi;
+    E_rec *= (1.0 / (2.0 * V)); // prefactor 1/(2V) for energy
+                                // below here
+    //  calcualte the self correting term
+    E_self = 0.0;
+    for (int i = 0; i < nat; ++i) // remove self interaction of each charge
+    {
+        E_self += -eta * Zatom[i] * Zatom[i] / std::sqrt(M_PI);
     }
 
-    backround = -M_PI * (backround * backround) / (alpha * alpha * V); // background neutrality term
+    double qtot = 0.0;
+    for (int i = 0; i < nat; ++i) // total ionic charge
+        qtot += Zatom[i];
 
-    return E_real + E_rec + self_correction + backround; // sum all componets
+    E_back = -M_PI * (qtot * qtot) / (alpha * V); // neutralizing background term
+
+    // sum all componets
+    double Etotal = E_real + E_rec + E_self + E_back;
+    return Etotal;
 }
+
+double V_ewald_p(double lattice_const, const std::vector<Vec3> &tau_cryst, const std::vector<double> &Zatom, double g_cut, double &E_real, double &E_rec, double &E_self, double &E_back)
+{
+    const int nat = (int)tau_cryst.size();
+
+    // build zv and ind arrays for alpha choice
+    std::vector<double> zv(1);    // one species
+    zv[0] = Zatom[0];             // all atoms same Z
+    std::vector<int> ind(nat, 0); // all atoms type 0
+
+    // choose alpha as QE does
+    double alpha = calc_alpha(lattice_const, zv, ind, g_cut); // alpha used in Ewald sum
+    double eta = std::sqrt(alpha);                            // eta = sqrt(alpha)
+
+    // cell volume and reciprocal prefactors for cubic cell
+    const double V = lattice_const * lattice_const * lattice_const; // cell volume
+    const double twopiba = 2.0 * M_PI / lattice_const;
+    const double alpha_coeff = twopiba * twopiba;
+
+    // convert crystal positions to cartesian
+    std::vector<Vec3> r_cart(nat);
+    for (int i = 0; i < nat; ++i)
+    {
+        r_cart[i] = reciprocal_cart_cubic(tau_cryst[i], lattice_const); // cartesian in bohr
+    }
+    // above here
+    //  calcualte realspace ewald energy
+    E_real = 0.0;
+
+    double Rcut = 4.0 / std::sqrt(alpha);      // real-space cutoff in bohr
+    int NxR = (int)(Rcut / lattice_const) + 1; // number of image cells in each direction
+    int NyR = NxR;
+    int NzR = NxR;
+// loop through each of the periodic cells by looping through each dim
+#pragma omp parallel for collapse(3) reduction(+ : E_real)
+    for (int nx = -NxR; nx <= NxR; ++nx)         // x-loop
+        for (int ny = -NyR; ny <= NyR; ++ny)     // y-loop
+            for (int nz = -NzR; nz <= NzR; ++nz) // z-loop
+            {
+                double Rx = nx * lattice_const; // compute the translation vectors, ie the distance to shift the ions postion into the next cell
+                double Ry = ny * lattice_const;
+                double Rz = nz * lattice_const;
+
+                for (int i = 0; i < nat; ++i) // loop through each pair of ions
+                    for (int j = 0; j < nat; ++j)
+                    {
+                        if (nx == 0 && ny == 0 && nz == 0 && i == j) // ignore self interactions for ions
+                            continue;
+
+                        double dx = r_cart[i].x - r_cart[j].x + Rx;
+                        double dy = r_cart[i].y - r_cart[j].y + Ry;
+                        double dz = r_cart[i].z - r_cart[j].z + Rz;
+
+                        double r = std::sqrt(dx * dx + dy * dy + dz * dz);
+                        if (r == 0.0)
+                            continue;
+                        if (r > Rcut)
+                            continue; // ensure that the ion is in the radius of cutoff
+
+                        E_real += Zatom[i] * Zatom[j] * std::erfc(eta * r) / r; // using the shortrange erfc aproximation to remove long range interactions
+                    }
+            }
+
+    E_real *= 0.5; // correct for double sum
+
+    //reciporacal ewald energy
+    E_rec = 0.0;
+
+    // dimensoinless G^2 is (abs(G)^2 / alpha_coeff) = h^2 + k^2 + l^2 for cubic cell
+    int maxh = (int)std::ceil(std::sqrt(g_cut)) + 1; // max index in each direction
+#pragma omp parallel for collapse(3) reduction(+ : E_rec)
+    for (int h = -maxh; h <= maxh; ++h)
+    {
+
+        for (int k = -maxh; k <= maxh; ++k)
+        {
+            for (int l = -maxh; l <= maxh; ++l)
+            {
+                if (h == 0 && k == 0 && l == 0)
+                    continue; // skip G=0
+
+                double G_dimless = double(h * h + k * k + l * l); // (abs(G)^2 / alpha_coeff)
+                if (G_dimless > g_cut)
+                    continue; // ensure  pt is outside G cutoff
+
+                double Gx = twopiba * h; // calcualte recipraocal vector componnents
+                double Gy = twopiba * k;
+                double Gz = twopiba * l;
+
+                double G = Gx * Gx + Gy * Gy + Gz * Gz; // calcualte g magintude as abs(G)^2 in bohr^-2
+
+                // calculate structure factor S(G) = sum( Z e^(i G*r))
+                std::complex<double> Sg(0.0, 0.0);
+                for (int i = 0; i < nat; ++i)
+                {
+                    double dot = Gx * r_cart[i].x + Gy * r_cart[i].y + Gz * r_cart[i].z; // G*r
+                    double c = std::cos(dot);
+                    double s = std::sin(dot);
+                    std::complex<double> phase(c, s); // e^(i G*r)
+                    Sg += Zatom[i] * phase;
+                }
+
+                double damping = std::exp(-G / (4.0 * alpha)); // apply gaussian screening exp(-G^2/(4aplha)) ?
+                double SG = std::norm(Sg);                     // normalizze strucutre factor 
+
+                E_rec += (4.0 * M_PI / G) * damping * SG; // summ reciprocal engery 
+            }
+        }
+    }
+
+    E_rec *= (1.0 / (2.0 * V)); // compute reciporacl engergy  by 1/(2V) for energy to normalize
+                                // below here
+    //  calcualte the self correting term
+    E_self = 0.0;
+    for (int i = 0; i < nat; ++i) // remove self interaction of each charge
+    {
+        E_self += -eta * Zatom[i] * Zatom[i] / std::sqrt(M_PI);
+    }
+
+    double qtot = 0.0;
+    for (int i = 0; i < nat; ++i) // total ionic charge
+        qtot += Zatom[i];
+
+    E_back = -M_PI * (qtot * qtot) / (alpha * V); // neutralizing background term
+
+    // sum all componets
+    double Etotal = E_real + E_rec + E_self + E_back;
+    return Etotal;
+}
+
+// ai chatgpt writen test case
+//  very simple parser for your iron.in (ibrav=1, cubic, ATOMIC_POSITIONS crystal)
+bool read_iron_in(
+    const std::string &filename,
+    double &lattice_const,
+    double &ecutrho,
+    int &nat,
+    std::vector<Vec3> &tau_cryst)
+{
+    std::ifstream in(filename);
+    if (!in)
+        return false;
+
+    std::string line;
+    bool in_positions = false;
+    nat = 0;
+    lattice_const = 0.0;
+    ecutrho = 0.0;
+
+    while (std::getline(in, line))
+    {
+        std::string trimmed = line;
+        // crude trim
+        while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t' || trimmed.back() == '\r'))
+            trimmed.pop_back();
+
+        if (trimmed.find("celldm(1)=") != std::string::npos)
+        {
+            // example:  ibrav= 1, nat= 4, ntyp= 1, celldm(1)=6.767109,
+            std::size_t p = trimmed.find("celldm(1)=");
+            if (p != std::string::npos)
+            {
+                p += std::string("celldm(1)=").size();
+                std::stringstream ss(trimmed.substr(p));
+                ss >> lattice_const;
+            }
+        }
+
+        if (trimmed.find("nat=") != std::string::npos)
+        {
+            std::size_t p = trimmed.find("nat=");
+            if (p != std::string::npos)
+            {
+                p += std::string("nat=").size();
+                std::stringstream ss(trimmed.substr(p));
+                ss >> nat;
+            }
+        }
+
+        if (trimmed.find("ecutrho") != std::string::npos)
+        {
+            // example: ecutwfc = 50, ecutrho = 500,
+            std::size_t p = trimmed.find("ecutrho");
+            if (p != std::string::npos)
+            {
+                p = trimmed.find('=', p);
+                if (p != std::string::npos)
+                {
+                    ++p;
+                    std::stringstream ss(trimmed.substr(p));
+                    ss >> ecutrho;
+                }
+            }
+        }
+
+        if (trimmed.find("ATOMIC_POSITIONS") != std::string::npos)
+        {
+            in_positions = true;
+            continue;
+        }
+
+        if (in_positions)
+        {
+            if (trimmed.empty() || trimmed.find("K_POINTS") != std::string::npos)
+            {
+                in_positions = false;
+                continue;
+            }
+
+            std::stringstream ss(trimmed);
+            std::string label;
+            Vec3 tau;
+            ss >> label >> tau.x >> tau.y >> tau.z;
+            tau_cryst.push_back(tau);
+        }
+    }
+
+    if (nat == 0 || lattice_const == 0.0 || tau_cryst.size() == 0)
+        return false;
+
+    return true;
+}
+// chatgpt written test case with small modifactiosn
 int main()
-{int b=64;
-    // ===========================================
-    // FCC Aluminum Lattice Constant (bohr)
-    // ===========================================
-    double a = 7.50;
+{
+    // read QE iron.in file
+    double lattice_const, ecutrho;
+    int nat;
+    std::vector<Vec3> tau_cryst;
 
-    double Lx = a;
-    double Ly = a;
-    double Lz = a;
+    if (!read_iron_in("iron.in", lattice_const, ecutrho, nat, tau_cryst))
+    {
+        std::cerr << "Error: could not parse iron.in\n";
+        return 1;
+    }
 
-    // ===========================================
-    // FCC primitive cell has ONE atom
-    // ===========================================
-    std::vector<Vec3> ion_pos;
-    ion_pos.push_back({0.0, 0.0, 0.0});
+    // assume one species, all atoms same valence Zval
+    // set this to match your Fe pseudopotential Zval (for example 16.0)
+    double Zval = 16.0;
 
-    // ===========================================
-    // Aluminum pseudopotential valence charge
-    // ===========================================
-    std::vector<double> Z = {3.0};
+    std::vector<double> Zatom(nat, Zval); // ionic charges for each atom
 
-    // ===========================================
-    // Dummy Vion_r (not used)
-    // ===========================================
-    std::vector<double> Vion_r;
+    // approximate g_cut from ecutrho and (2π/a)^2
+    // QE defines dimensionless G^2 = |G|^2 / alpha_coeff, g_cut is the max of this.
+    const double twopiba = 2.0 * M_PI / lattice_const;
+    const double alpha_coeff = twopiba * twopiba;
+    // this mapping is approximate; you can tune the prefactor to match QE exactly
+    double g_cut = ecutrho / alpha_coeff; // simple guess
 
-    // Grid size — irrelevant to Ewald formula,
-    // but required by your function signature.
-    int Nx = 128, Ny = 128, Nz = 128;
-
-    // ===========================================
-    // Compute Ewald ion-ion energy
-    // ===========================================
-    double E_Ha = Ve_PlaneWave_3D_s(ion_pos, Z,
-                                    Lx, Ly, Lz,
-                                    Nx, Ny, Nz);
-
+    double E_real, E_rec, E_self, E_back;
+    double E_Ha = V_ewald_s(lattice_const, tau_cryst, Zatom, g_cut,
+                            E_real, E_rec, E_self, E_back);
     double E_Ry = 2.0 * E_Ha;
 
-    // ===========================================
-    // Output
-    // ===========================================
-    std::cout << "=== FCC Aluminum Ewald Test ===\n";
-    std::cout << "Lattice constant a = " << a << " bohr\n";
-    std::cout << "Valence Z = 3.0\n";
-    std::cout << "Primitive cell: 1 atom\n\n";
+    std::cout << std::setprecision(10);
+    std::cout << "=== QE-style Ewald test from iron.in ===\n";
+    std::cout << "lattice_const      = " << lattice_const << " bohr\n";
+    std::cout << "nat       = " << nat << "\n";
+    std::cout << "ecutrho   = " << ecutrho << " Ry\n";
+    std::cout << "Zval      = " << Zval << "\n";
+    std::cout << "g_cut     = " << g_cut << "\n\n";
 
-    std::cout << "Ewald ion-ion energy:\n";
-    std::cout << "  " << E_Ha << " Ha\n";
-    std::cout << "  " << E_Ry << " Ry\n";
+    std::cout << "E_real    = " << E_real << " Ha\n";
+    std::cout << "E_rec     = " << E_rec << " Ha\n";
+    std::cout << "E_self    = " << E_self << " Ha\n";
+    std::cout << "E_back    = " << E_back << " Ha\n";
+    std::cout << "----------------------------------------\n";
+    std::cout << "E_ewald   = " << E_Ha << " Ha\n";
+    std::cout << "E_ewald   = " << E_Ry << " Ry\n";
 
-    // -------------------------------------------------------
-    // LATTICE CONSTANT FOR bcc IRON (bohr)
-    // -------------------------------------------------------
-    a = 5.421; // BCC Fe lattice constant from QE examples
 
-    Lx = a;
-    Ly = a;
-    Lz = a;
-
-    // -------------------------------------------------------
-    // BCC PRIMITIVE CELL HAS 2 ATOMS:
-    //   (0, 0, 0)
-    //   (a/2, a/2, a/2)
-    // -------------------------------------------------------
-
-    ion_pos.push_back({0.0, 0.0, 0.0});
-    ion_pos.push_back({a / 2.0, a / 2.0, a / 2.0});
-
-    // -------------------------------------------------------
-    // Fe pseudopotential valence charge from QE: Zval = 16
-    // -------------------------------------------------------
-    Z = {16.0, 16.0};
-
-    // -------------------------------------------------------
-    // FFT GRID — determines how many G's we sum over
-    // -------------------------------------------------------
-    Nx = b;
-    Ny = b;
-    Nz = b;
-
-    // -------------------------------------------------------
-    // Compute Ewald ion–ion energy (Hartree)
-    // -------------------------------------------------------
+    double sump=0;
+    double sums=0;
     using namespace std::chrono;
-        auto t0 = high_resolution_clock::now(); // begin timing clock
-    E_Ha = Ve_PlaneWave_3D_s(ion_pos, Z, Lx, Ly, Lz, Nx, Ny, Nz);
-    E_Ry = 2.0 * E_Ha;
+    auto t0 = high_resolution_clock::now(); // begin timing clock
+        int n=20;
+
+    for(int j=2; j<17; j+=2){
+    omp_set_num_threads(j);
+    for(int i=0; i<=n; i++){
+    E_Ha = V_ewald_s(lattice_const, tau_cryst, Zatom, g_cut,
+                     E_real, E_rec, E_self, E_back);
+
     auto t1 = high_resolution_clock::now(); // stop clock and find total time
-        std::chrono::duration<double> elapsed = t1 - t0;
-    // -------------------------------------------------------
-    // OUTPUT
-    // -------------------------------------------------------
-    std::cout << "=== BCC Iron Ewald Test ===\n";
-    std::cout << "Lattice constant a = " << a << " bohr\n";
-    std::cout << "Atoms:\n";
-    std::cout << "  Fe at (0,0,0)\n";
-    std::cout << "  Fe at (a/2,a/2,a/2)\n";
-    std::cout << "Zval = 16 for both Fe atoms\n\n";
-
-    std::cout << "Computed Ewald ion-ion energy s:\n";
-    std::cout << "  " << E_Ha << " Hartree\n";
-    std::cout << "  " << E_Ry << " Rydberg\n";
-    std::cout << " took " << elapsed.count() << " \n";
-
-
+    std::chrono::duration<double> elapsed = t1 - t0;
+    sums+=elapsed.count();
     t0 = high_resolution_clock::now(); // begin timing clock
-    E_Ha = Ve_PlaneWave_3D_P(ion_pos, Z, Lx, Ly, Lz, Nx, Ny, Nz);
-    E_Ry = 2.0 * E_Ha;
-  t1 = high_resolution_clock::now(); // stop clock and find total time
-         elapsed = t1 - t0;
-    std::cout << "Computed Ewald ion-ion energy p:\n";
-    std::cout << "  " << E_Ha << " Hartree\n";
-    std::cout << "  " << E_Ry << " Rydberg\n";
-std::cout << " took " << elapsed.count() << " \n";
-    // (QE Ewald for BCC Fe is around -693.782 Ry depending on pseudopotential)
-    std::cout << "\nExpected QE magnitude ~ -693.8 Ry (depends on PP & grid)\n";
+
+    E_Ha = V_ewald_p(lattice_const, tau_cryst, Zatom, g_cut,
+                     E_real, E_rec, E_self, E_back);
+
+    t1 = high_resolution_clock::now(); // stop clock and find total time
+     elapsed = t1 - t0;
+     sump+=elapsed.count();
+
+    }
+    std::cout << "cores " << j << " \n";
+    std::cout << "s   = " << sums/n << " \n";
+    std::cout << "p   = " << sump/n << " \n";
+    std::cout << "speed up:  " << sums/sump << " \n";
+}
+
+  
+
     return 0;
 }

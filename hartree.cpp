@@ -251,7 +251,7 @@ double compute_hartree_energy(const double *rho_r,const double *vhart_r,int Nx, 
     return 0.5 * sum * dV;
 }
 
-// main test function, written by chat_gpt 
+// main test function, written by chat_gpt sligthly modifyed
 int main()
 {
     using namespace std;
