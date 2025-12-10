@@ -186,7 +186,7 @@ void setup_pseudopotential(DFTContext* ctx) {
         std::cout << "Note: This is computed ONCE (density-independent)\n";
         std::cout << "      and reused in all SCF iterations.\n\n";
         
-        ctx->Vnl_matrix = precompute_pseudopotential_matrix(*ctx->pseudopot, ctx->gvectors, ctx->npw);
+        ctx->Vnl_matrix = precompute_pseudopotential_matrix(*ctx->pseudopot, ctx->gvectors, ctx->npw, ctx->cell_volume);
     } else {
         ctx->Vnl_matrix = nullptr;
         if (ctx->use_pseudopot && ctx->pseudopot == nullptr) {
