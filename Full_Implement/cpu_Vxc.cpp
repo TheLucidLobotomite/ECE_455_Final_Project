@@ -64,6 +64,25 @@ inline double vc_pw92(double n) {
 }
 
 /**
+ * LDA Exchange Energy per electron (Rydberg units)
+ */
+inline double ex_lda(double n) {
+    const double Cx_energy = 0.9847450218426965;  // 3/4 * (3/π)^(1/3) * 2 (Rydberg)
+    return -Cx_energy * std::pow(n, 1.0/3.0);
+}
+
+/**
+ * Total exchange-correlation energy per electron
+ */
+inline double compute_exc(double n) {
+    if (n < 1e-12) return 0.0;
+    const double rs = std::pow(3.0 / (4.0 * PI * n), 1.0/3.0);
+    double ex = ex_lda(n);
+    double ec = epsilon_c(rs);
+    return ex + ec;
+}
+
+/**
  * Total exchange-correlation potential
  */
 inline double compute_vxc(double n) {

@@ -1,8 +1,8 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-//#include "lobotomites_main_cpu.cpp"
-#include "lobotomites_main_gpu.cpp"
+#include "lobotomites_main_cpu.cpp"
+//#include "lobotomites_main_gpu.cpp"
 
 /**
  * DFT Test Driver Program - WITH PSEUDOPOTENTIALS AND EWALD
@@ -20,24 +20,25 @@ int main() {
     
     DFTContext ctx;
     
-    // System: Simple cubic Fe
-    double alat = 6.767109;  // Lattice constant in Bohr
+    // System: BCC Fe (Body-Centered Cubic)
+    double alat = 5.42;  // Lattice constant in Bohr (~2.87 Angstrom for BCC Fe)
     ctx.a1[0] = alat; ctx.a1[1] = 0.0;   ctx.a1[2] = 0.0;
     ctx.a2[0] = 0.0;   ctx.a2[1] = alat; ctx.a2[2] = 0.0;
     ctx.a3[0] = 0.0;   ctx.a3[1] = 0.0;   ctx.a3[2] = alat;
-    
+
     // Ion positions and charges (for Ewald summation)
-    // Fe atom at the origin
-    ctx.ion_positions = {{0.0, 0.0, 0.0}};  // Position in Bohr
-    ctx.ion_charges = {26.0};                // Fe has 26 protons (nuclear charge)
+    // BCC structure: 2 Fe atoms per unit cell
+    ctx.ion_positions = {{0.0, 0.0, 0.0},                    // Corner atom
+                         {alat/2.0, alat/2.0, alat/2.0}};    // Body-center atom
+    ctx.ion_charges = {26.0, 26.0};          // Both Fe atoms have 26 protons
     
     // DFT Parameters
-    ctx.ecut_ry = 50.0;           // Energy cutoff (Rydberg)
-    ctx.nelec = 8;                // Number of electrons (Fe atom: 8 valence)
+    ctx.ecut_ry = 50;           // Energy cutoff (Rydberg)
+    ctx.nelec = 16;                // Number of electrons (Fe atom: 8 valence)
     ctx.nbnd = ctx.nelec / 2 + 3; // Number of bands (occupied + some empty)
     
     // SCF Parameters
-    ctx.mixing_beta = 0.5;        // Density mixing (0.1-0.5 typical)
+    ctx.mixing_beta = 0.1;        // Density mixing (start conservative for stability)
     ctx.conv_thr = 1.0e-6;        // Convergence threshold (Ry)
     ctx.max_iter = 50;            // Maximum SCF iterations
     
@@ -46,7 +47,7 @@ int main() {
     ctx.pseudopot = nullptr;
     ctx.Vnl_matrix = nullptr;     // Initialize to nullptr
     
-    std::string upf_file = "NA.UPF";  // Path to your UPF file
+    std::string upf_file = "Fe.UPF";  // Path to your UPF file
     std::cout << "Checking for pseudopotential: " << upf_file << "\n";
     
     // Check if file exists first
