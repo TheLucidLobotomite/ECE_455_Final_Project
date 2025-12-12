@@ -4,6 +4,7 @@
 #include <fftw3.h>
 #include <omp.h>
 #include <iostream>
+// hartree code for implementation
 namespace numint
 {
 
