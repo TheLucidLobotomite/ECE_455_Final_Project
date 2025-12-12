@@ -9,7 +9,7 @@
 #include <iomanip>
 #include <chrono>
 #include <stdexcept>
-
+//  test prodcution implementation fo ewald potiental code
 // 3 componet vector for holding vals at a spesific pt
 struct Vec3
 {
@@ -150,7 +150,7 @@ double V_ewald_s(double lattice_const, const std::vector<Vec3> &tau_cryst, const
                 if (h == 0 && k == 0 && l == 0)
                     continue; // skip G=0
 
-                double G_dimless = double(h * h + k * k + l * l); // (|G|^2 / alpha_coeff)
+                double G_dimless = double(h * h + k * k + l * l); // (abs(G)^2 / alpha_coeff)
                 if (G_dimless > g_cut)
                     continue; // outside G cutoff
 
@@ -158,9 +158,9 @@ double V_ewald_s(double lattice_const, const std::vector<Vec3> &tau_cryst, const
                 double Gy = twopiba * k;
                 double Gz = twopiba * l;
 
-                double G = Gx * Gx + Gy * Gy + Gz * Gz; // |G|^2 in bohr^-2
+                double G = Gx * Gx + Gy * Gy + Gz * Gz; // abs(G)^2 in bohr^-2
 
-                // compute structure factor S(G) = Σ_i Z_i e^{i G·r_i}
+                // compute structure factor S(G) 
                 std::complex<double> Sg(0.0, 0.0);
                 for (int i = 0; i < nat; ++i)
                 {
@@ -172,7 +172,7 @@ double V_ewald_s(double lattice_const, const std::vector<Vec3> &tau_cryst, const
                 }
 
                 double damping = std::exp(-G / (4.0 * alpha)); // Gaussian screening exp(-G^2/(4α))
-                double SG = std::norm(Sg);                     // |S(G)|^2
+                double SG = std::norm(Sg);                     // abs(S(G))^2
 
                 E_rec += (4.0 * M_PI / G) * damping * SG; // reciprocal contribution
             }
@@ -318,15 +318,16 @@ double V_ewald_p(double lattice_const, const std::vector<Vec3> &tau_cryst, const
     }
 
     double qtot = 0.0;
-    for (int i = 0; i < nat; ++i) // total ionic charge
+    for (int i = 0; i < nat; ++i) // calculatre the total ionic charge
         qtot += Zatom[i];
 
-    E_back = -M_PI * (qtot * qtot) / (alpha * V); // neutralizing background term
+    E_back = -M_PI * (qtot * qtot) / (alpha * V); // calcualte the  background corection term
 
     // sum all componets
     double Etotal = E_real + E_rec + E_self + E_back;
     return Etotal;
 }
+
 
 // ai chatgpt writen test case
 //  very simple parser for your iron.in (ibrav=1, cubic, ATOMIC_POSITIONS crystal)

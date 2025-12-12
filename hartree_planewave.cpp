@@ -8,7 +8,7 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
-
+//this code tests that the hartree loop can calculate the right value
 
 // all functions with ***AI*** are test fucntions or test ajacent functiosn writen with ai
 namespace numint
